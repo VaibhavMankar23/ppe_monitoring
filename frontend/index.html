@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PPE Compliance</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
+    <!-- Company wordmark as the browser-tab identity (this is a company product). -->
+    <link rel="icon" type="image/png" href="/mai-mahindra.png" />
+    <script>
+      // Appearance switcher removed — the app is light-only. Force light before first paint
+      // so a stale saved preference or a dark-mode OS can't flip it.
+      document.documentElement.classList.remove("dark");
+      document.documentElement.style.colorScheme = "light";
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
