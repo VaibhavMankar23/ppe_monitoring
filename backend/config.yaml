@@ -1,0 +1,77 @@
+# PPE compliance monitor configuration - saved from the Config page.
+# Relative paths resolve against this file's directory; strings may use ${VAR:-default}.
+# (Comments are only preserved when saving from the Raw YAML view.)
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  static_dir: ${PPE_STATIC_DIR:-../frontend/dist}
+  cors_origins:
+  - '*'
+model:
+  weights: ${PPE_MODEL_WEIGHTS:-../models/safesight/best.pt}
+  device: auto
+  openvino: true
+  imgsz: 480
+  cpu_imgsz: 480
+  half: true
+  default_confidence: 0.35
+  iou: 0.7
+  cpu_threads: 0
+  class_map:
+    Worker: person
+    Hard_hat: helmet
+    Vest: vest
+    Glove: gloves
+    Glass: goggles
+    Boots: boots
+    Mask: mask
+    Ear-Protection: ear_protection
+    No-Helmet: no_helmet
+    No-Vest: no_vest
+    No-Glove: no_gloves
+    No-Glass: no_goggles
+    No-Boots: no_boots
+    No-Mask: no_mask
+    No-Ear-Protection: no_ear_protection
+inference:
+  mode: batched
+  max_fps_per_stream: 15
+  frame_skip: 0
+  process_width: 960
+  jpeg_quality: 75
+  person_refine: true
+  refine_imgsz: 320
+  refine_max_persons: 6
+  refine_batch: 2
+tracking:
+  low_thresh: 0.15
+  match_iou: 0.25
+  max_lost_seconds: 2
+  min_hits: 2
+compliance:
+  missing_policy: strict
+  min_containment: 0.35
+  smoothing_window: 6
+  min_person_height: 60
+alerts:
+  min_violation_frames: 6
+  cooldown_seconds: 30
+  snapshot_quality: 85
+  retention_days: 30
+  db_path: ./data/violations.db
+streams:
+- id: gate-no-2
+  name: Gate No. 2
+  source:
+    type: file
+    uri: ${PPE_VIDEOS_DIR:-../videos}/NVR_ch20_main_20260910150009_20260910160009.cpv
+  required_ppe:
+  - helmet
+  - vest
+  - gloves
+  - goggles
+  - mask
+  - boots
+  enabled: true
+  priority: normal

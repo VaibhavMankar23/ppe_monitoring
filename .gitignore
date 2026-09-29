@@ -1,0 +1,16 @@
+.venv/
+backend_venv311/
+__pycache__/
+.pytest_cache/
+node_modules/
+frontend/dist/
+snapshots/
+backend/snapshots/
+*_openvino_model/
+.env
+videos/*
+!videos/README.md
+backend/data/
+data/
+config/
+backend/config.backup.*.yaml

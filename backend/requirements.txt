@@ -1,0 +1,25 @@
+# For CPU-only installs, install torch first from the CPU index to avoid the large CUDA wheel:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# For CUDA, follow https://pytorch.org/get-started/locally/
+torch>=2.2
+torchvision>=0.17
+ultralytics>=8.3,<9
+opencv-python-headless>=4.9
+numpy>=1.26
+scipy>=1.11
+sqlalchemy>=2.0
+bcrypt>=4.1           # password hashing
+PyJWT>=2.8            # access tokens
+cryptography>=42      # camera passwords encrypted at rest
+python-multipart>=0.0.9  # video upload
+psutil>=5.9           # system health page
+openvino>=2024.0      # Intel CPU/iGPU acceleration (optional; auto-used when no CUDA)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+pyyaml>=6.0
+python-dotenv>=1.0
+
+# tests
+pytest>=8.0
+httpx>=0.27

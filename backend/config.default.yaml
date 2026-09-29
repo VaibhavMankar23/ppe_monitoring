@@ -1,0 +1,108 @@
+# PPE compliance monitor configuration.
+# Edit from the dashboard's Config page (validated, backed up and hot-reloaded) or by hand.
+#
+# Relative paths are resolved against the directory of this file.
+# String values may reference environment variables: ${VAR} or ${VAR:-default}.
+# Env overrides applied after loading: PPE_HOST, PPE_PORT, PPE_DEVICE, PPE_IMGSZ,
+# PPE_CPU_IMGSZ, PPE_DB_PATH. The file itself can be swapped with PPE_CONFIG=/path/config.yaml.
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  static_dir: ${PPE_STATIC_DIR:-../frontend/dist}   # built frontend, served at /
+  cors_origins: ["*"]
+
+model:
+  weights: ${PPE_MODEL_WEIGHTS:-../models/safesight/best.pt}
+  # Optional 2nd, general-purpose detector for phone-use detection (COCO "cell phone").
+  # "" disables it. A camera also needs `detect_phone: true` in its stream entry to act on it.
+  phone_weights: ${PPE_PHONE_WEIGHTS:-}   # e.g. ../models/coco/yolov8n.pt
+  # auto = CUDA if present, else OpenVINO on an Intel iGPU, else OpenVINO CPU, else PyTorch CPU.
+  device: auto
+  openvino: true            # auto-export the .pt to OpenVINO once (cached next to the weights)
+  imgsz: 480                # full-frame pass size on GPU/iGPU (PPE detail comes from person crops)
+  cpu_imgsz: 480            # full-frame pass size on CPU-only
+  half: true                # FP16 on CUDA only
+  default_confidence: 0.35  # starting value of each tile's confidence slider
+  iou: 0.7                  # NMS IoU threshold
+  cpu_threads: 0
+  # Raw model class name -> canonical name (unlisted names use the alias table in detector.py).
+  class_map:
+    Worker: person
+    Hard_hat: helmet
+    Vest: vest
+    Glove: gloves
+    Glass: goggles
+    Boots: boots
+    Mask: mask
+    Ear-Protection: ear_protection
+    No-Helmet: no_helmet
+    No-Vest: no_vest
+    No-Glove: no_gloves
+    No-Glass: no_goggles
+    No-Boots: no_boots
+    No-Mask: no_mask
+    No-Ear-Protection: no_ear_protection
+
+inference:
+  mode: batched             # batched | per_stream
+  max_fps_per_stream: 15
+  frame_skip: 0             # extra captured frames skipped between processed frames
+  process_width: 960        # downscale frames to this width before inference/annotation
+  jpeg_quality: 75
+  person_refine: true       # second pass on full-resolution person crops
+  refine_imgsz: 320
+  refine_max_persons: 6
+  refine_batch: 2
+
+tracking:
+  low_thresh: 0.15          # weakest detection that may continue an existing track
+  match_iou: 0.25
+  max_lost_seconds: 2.0
+  min_hits: 2               # frames a person must be seen before being shown
+
+compliance:
+  missing_policy: strict    # strict | negative_only
+  min_containment: 0.35
+  smoothing_window: 6
+  min_person_height: 60
+
+alerts:
+  min_violation_frames: 6   # confirmation: consecutive non-compliant frames before a violation...
+  min_violation_seconds: 1  # ...lasting at least this long (a single bad frame never counts)
+  event_gap_seconds: 10     # a worker's violation event ends after this long without the violation
+  cooldown_seconds: 30      # one violation per event; a new one for the same worker needs the event
+                            # to have ended and this long since it began (ongoing events are extended)
+  snapshot_quality: 85      # JPEG quality of stored violation images
+  save_original_frame: true # also keep the clean full-resolution frame as evidence
+  retention_days: 30        # delete stored violations older than this (0 = keep forever)
+  evidence_retention_days: 0  # delete evidence images older than this, keep the record (0 = as long as the record)
+  db_path: ./data/violations.db
+
+# Outbound alarm on each stored violation (rate-limited per camera, on top of the alert dedupe above).
+# Put secrets in env vars: e.g. `password: ${PPE_SMTP_PASSWORD}` keeps them out of this file.
+alarm:
+  cooldown_seconds: 60      # minimum gap between alarms for one camera
+  webhook:
+    enabled: false
+    url: ""                 # POST target: hooter/relay gateway, Teams/Slack incoming webhook, a PLC, ...
+    timeout: 5
+  email:
+    enabled: false
+    smtp_host: ""
+    smtp_port: 587
+    username: ""
+    password: ${PPE_SMTP_PASSWORD:-}
+    use_tls: true
+    sender: ""
+    recipients: []          # e.g. ["ehs@plant.example"]
+    attach_snapshot: true
+
+streams: []
+  # No cameras yet: add them from the dashboard or Config > Streams > "Add camera"
+  # (RTSP / HTTP IP cameras, an uploaded video, a video already in the videos folder, a webcam, an image folder).
+  # Or list them here, for example:
+  #   - id: gate1
+  #     name: Gate 1
+  #     source: { type: rtsp, uri: "rtsp://192.168.1.64:554/Streaming/Channels/101", username: viewer, password: "..." }
+  #     required_ppe: [helmet, vest]

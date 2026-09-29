@@ -1,0 +1,42 @@
+services:
+  ppe-monitor:
+    build:
+      context: .
+      args:
+        TORCH_INDEX: ${TORCH_INDEX:-cpu}
+    image: ppe-monitor:latest
+    ports:
+      - "${PPE_PORT:-8000}:8000"
+    env_file:
+      - path: .env
+        required: false          # needs Docker Compose >= 2.24
+    environment:
+      PPE_DEVICE: ${PPE_DEVICE:-auto}
+      PPE_CONFIG: /app/config/config.yaml       # edited from the Config page
+      # violations + users + refresh sessions + audit log + analytics counters: one SQLite file
+      PPE_DB_PATH: /app/data/violations.db
+      # signs the access tokens; must be set in .env (compose refuses to start without it)
+      PPE_JWT_SECRET: ${PPE_JWT_SECRET:?set PPE_JWT_SECRET in .env - see .env.example}
+      PPE_COOKIE_SECURE: ${PPE_COOKIE_SECURE:-auto}
+      # plant time zone: "violations today" and the CSV local_time column use it (e.g. Asia/Kolkata)
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./videos:/app/videos                    # camera clips / NVR exports (writable: Add camera > Upload saves here)
+      - ./models:/app/models                    # weights (+ cached OpenVINO export)
+      - ./config:/app/config                    # config.yaml + config.backup.<timestamp>.yaml (persistent)
+      - ./data:/app/data                        # violations.db: violations, users, audit log (persistent)
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+    # --- Intel iGPU (OpenVINO GPU plugin): uncomment on a Linux host with /dev/dri ---
+    # devices:
+    #   - /dev/dri:/dev/dri
+
+    # --- NVIDIA GPU: build with TORCH_INDEX=cu124 and uncomment ---
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]

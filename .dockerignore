@@ -1,0 +1,24 @@
+**/.venv
+backend_venv311
+**/__pycache__
+**/.pytest_cache
+frontend/node_modules
+frontend/dist
+videos
+models
+snapshots
+data
+config
+backend/snapshots
+data
+output
+Testing_Output
+First_testing_data_output
+Second Output Testing
+__MACOSX
+*.png
+*.jpg
+backend/data
+backend/config.backup.*.yaml
+# the local dev/runtime config never ships: the container reads /app/config/config.yaml (PPE_CONFIG)
+backend/config.yaml
