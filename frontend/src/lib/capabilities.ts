@@ -16,7 +16,7 @@ export function phoneProblem(draftWeights: string | undefined, caps: Capabilitie
   const unchanged = savedWeights === undefined || draftWeights === savedWeights;
   const configured = unchanged && caps ? caps.phone.configured : draft !== "" && !/^\$\{[^}]*:-\}$/.test(draft);
   if (!configured) {
-    return "No phone model is configured. Set one (e.g. ../models/coco/yolov8n.pt) in Configuration → Model settings — it runs as an additional detector alongside the PPE model.";
+    return "No phone model is configured. Set one (e.g. ../models/coco/yolov8n.pt) in Settings → Detection model — it runs as an additional detector alongside the PPE model.";
   }
   if (unchanged && caps?.phone.load_failed) {
     return "The phone model is set but couldn't be loaded (missing file, or no phone class). Check the server log.";

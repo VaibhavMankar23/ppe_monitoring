@@ -5,23 +5,26 @@ HTTP IP cameras, webcams; added from the UI). Everything is behind a sign-in
 with two roles (**Admin**, **Super Admin**, see [Authentication and roles](#authentication-and-roles)).
 The web app has these pages:
 
-- **Dashboard.** A grid of live camera tiles (4 / 9 / 12 / 16 per page, search, status filters).
-  Every camera runs continuous YOLO detection and person tracking, and marks each worker
-  **COMPLIANT** or **NON-COMPLIANT** with the missing items.
-- **Violations.** Every alert stored permanently in SQLite with its snapshot. Grouped by day, filterable,
-  with a full-size viewer; the page updates live.
-- **Config.** Edit `config.yaml` in a validated form (or as raw YAML), with automatic backups. Changes
-  are **applied without restarting the server**, and only the cameras that changed are restarted.
-- **Analytics.** Each chart answers one safety-manager question: KPIs, trend (daily / weekly), camera ×
-  missing-PPE stacked bars, PPE share donut, hour × weekday heatmap, top repeat offenders, compliance
-  vs target, camera leaderboard, detected → compliant funnel. Date, camera and PPE filters; CSV / PDF.
-- **System health.** Per-camera detection FPS, dropped frames, reconnects, latency; engine load,
-  CPU, memory, and a capacity verdict.
-- **Users** and **Audit log** (Super Admin only). Manage accounts; see who changed what, and when.
+- **Live** (`#/live`). The camera wall: every camera as the detector sees it, with who is in
+  violation right now, a live feed of the latest violations, and a per-camera detail view (video,
+  zones, the workers in view and why each is flagged, start/stop, boxes, confidence).
+- **Review queue** (`#/review`). Every violation with its evidence. A reviewer marks each one
+  **Valid** or **False alarm** (with a reason); verdicts feed the alert-precision figure and the
+  retraining dataset export. Keyboard-driven (J/K, V, F).
+- **Analytics** (`#/analytics`). Compliance rate against target, trend, violations by camera and
+  type, hour × weekday heatmap, alert precision and false-alarm reasons, repeat tracks. CSV / print.
+- **Cameras & zones** (`#/cameras`). Add and edit cameras, and draw **zones** on the image: where
+  PPE is checked, where it is ignored, and which areas are restricted.
+- **Settings** (`#/settings`). Model, performance, tracking, compliance rules, alerts and retention,
+  alarms, raw YAML, backups. Changes are **applied without restarting the server**.
+- **System health** (`#/system`). Whether the detector keeps up, and whether each camera delivers.
+- **Users** and **Audit log** (Super Admin only).
+
+Old links (`#/dashboard`, `#/violations`, `#/config`, `#/add-camera`) redirect to the new pages.
 
 ```
 backend/   FastAPI + Ultralytics YOLO + OpenCV + SQLAlchemy  (app/, config.yaml, config.default.yaml, tests/, scripts/)
-frontend/  React + Vite + Tailwind + Recharts (light theme; routes #/dashboard #/violations #/analytics #/config #/system #/users #/audit)
+frontend/  React + Vite + Tailwind + Recharts (light theme; routes #/live #/review #/analytics #/cameras #/settings #/system #/users #/audit)
 videos/    your camera clips / NVR exports (see videos/README.md)
 models/    PPE weights (default: models/safesight/best.pt)
 ```
@@ -77,22 +80,33 @@ recording loops like a live camera.
 
 ## Pages
 
-### Dashboard (`#/dashboard`)
+### Live (`#/live`)
 
-A grid of 4 / 9 / 12 / 16 tiles per page (2×2 … 4×4) with pages, search, and status filters
-(*Live*, *Problems*, *Violating now*). From 12 per page the tiles are compact. Each tile:
+A status strip (in violation now, workers in view, cameras live, violations today), the camera
+grid (filter: all / in violation / problems; three tile sizes) and the latest violations, updated
+live. All tiles share one WebSocket and only tiles on screen receive video. A tile shows the
+camera's status, how many workers are in violation, and its detection rate and delay. Click it for
+the detail view: large video with the zones drawn over it, a table of the workers in view (status,
+each check, the zone they stand in), throughput figures, the controls (start/stop, boxes,
+confidence) and that camera's latest violations.
 
-- **Header:** camera name, status badge (Live / Connecting / Reconnecting / Offline / No signal / Stalled / Error / Stopped), processed FPS, expand button.
-- **Video:** annotated live frames. All tiles share the app's one WebSocket (only the tiles on
-  screen are sent), so 12–16 tiles aren't limited by the browser's 6 connections per host.
-- **Footer:** workers, current violations, latency.
-- **Below:** required-PPE chips, Start/Stop, Boxes on/off, and a live confidence slider.
+### Zones (`#/cameras` → a camera → Zones)
 
-Click a tile to open the detail view: large video, FPS / capture FPS / inference / latency, a
-per-worker item list, detection counts, and that camera's latest stored violations. The top bar
-shows system status, a clock, and a **"N violations today"** link to the Violations page.
+A zone is a polygon drawn on the camera image (stored as fractions of the frame in
+`streams[].zones`). The point that decides is the bottom-centre of the person box (the feet), so
+zones are drawn on the floor.
 
-### Violations (`#/violations`)
+| Type | Effect |
+|---|---|
+| `monitor` | With at least one monitor zone, PPE is judged only for workers standing inside one. |
+| `ignore` | Workers standing inside are never judged (walkways, offices seen through a window). Wins over `monitor`. |
+| `restricted` | Standing inside is itself a violation, `restricted_area`, whatever PPE is worn. |
+
+A worker outside the monitored area is still tracked and shown (thin grey box) but is "not
+judged": no violation, and not counted in the compliance rate. No zones = the whole frame is
+monitored, as before. Logic: `ppe_logic.apply_zones` / `mask_unmonitored`; tests: `tests/test_zones.py`.
+
+### Review queue (`#/review`)
 
 Every violation is stored in SQLite (`alerts.db_path`, default `backend/data/violations.db`) with: id,
 timestamp, camera, track ID, missing-PPE list, evidence images, a thumbnail and provenance metadata.
@@ -122,17 +136,21 @@ timestamp, camera, track ID, missing-PPE list, evidence images, a thumbnail and 
 
 Lifecycle shown in the viewer: **Detected → Confirmed → Ongoing / Ended → Acknowledged**.
 
-- Cards are grouped by local day under sticky headers ("Today", "Yesterday", "21 Sep 2026"),
-  newest first. Each card shows the thumbnail, time, camera, track and missing-PPE chips.
-- **Filters:** date range, camera, missing-PPE item, and clear. Infinite scroll uses keyset
-  pagination, so there are no duplicates while new alerts arrive. Loading skeletons and empty
-  states are included.
-- **Viewer:** click a card to open the evidence (tabs: Evidence / Person crop / Original frame),
-  camera, violations with confidence, the lifecycle and "How this was detected". It has ‹ › arrows
-  (and ← → keys), Esc to close, Download (the shown image), Acknowledge and Delete.
-- **Live:** new violations that match the current filters appear at the top via the WebSocket;
-  ongoing events are marked *Ongoing* and their duration updates live.
-- **Export CSV** exports the current filter.
+- **List and detail.** Rows are grouped by local day, newest first, with keyset pagination (no
+  duplicates while new alerts arrive). Filters: review state (unreviewed / valid / false alarm /
+  all), camera, violation type, date range. The detail pane shows the evidence (Evidence / Person
+  crop / Original frame), per-item confidence, the lifecycle and "How this was detected".
+- **Verdicts.** `POST /api/violations/{id}/review` with `{verdict: "valid" | "false_alarm" | null,
+  reason, note}`. A false alarm needs a reason (PPE was worn, not a person, wrong person, not
+  required here, duplicate, poor image, other): each reason points at a different fix. Reviewing
+  also acknowledges the violation. Every verdict is in the audit log.
+- **Alert precision** = valid / reviewed, shown in Analytics with the false-alarm reasons. It
+  measures how many raised alerts were real; it says nothing about violations the system missed.
+- **Export dataset** (`GET /api/violations/dataset`) downloads a YOLO-layout zip of the clean
+  original frames with a `person` pre-label each and a `manifest.csv` carrying the verdicts, to
+  correct in an annotation tool and retrain on. "Not a person" false alarms become hard negatives.
+- **Live:** new violations appear as they are confirmed; ongoing events are marked *Ongoing*.
+- **Export CSV** exports the current filter (now with the review columns).
 - **Retention:** records older than `alerts.retention_days` (default 30; 0 = keep forever) are
   deleted at startup, hourly, and after every config save. `alerts.evidence_retention_days`
   (default 0 = keep with the record) removes only the images of older, ended violations; the
@@ -142,7 +160,11 @@ Snapshots are cut from the **clean full-resolution frame**, with one outline and
 the worker stays visible as evidence. They aren't taken from the downscaled, label-covered live
 overlay.
 
-### Config (`#/config`)
+### Settings (`#/settings`) and Cameras (`#/cameras`)
+
+Cameras (source, rules, zones) are edited on the Cameras page; everything else on Settings. Both
+save the same `config.yaml` through the same validated, backed-up, hot-reloaded path:
+
 
 - **Form view** in sections:
   - **General:** server, compliance rules.

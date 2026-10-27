@@ -242,3 +242,23 @@ def test_all_required_items_undetectable_is_unknown_not_compliant():
     # a camera whose every required item is undetectable can't be judged -> unknown, not a false pass
     (res,) = evaluate_frame([person()], [], ["gloves", "boots"], detectable={"helmet"})
     assert res.status == "unknown"
+
+
+# ------------------------------------------------------------------ group boxes
+def test_group_box_around_workers_standing_together_is_dropped():
+    from app.ppe_logic import drop_group_boxes
+
+    a = Detection("person", 0.9, (100, 100, 160, 300))
+    b = Detection("person", 0.88, (165, 105, 225, 300))
+    group = Detection("person", 0.8, (95, 95, 230, 305))  # one box around both
+    assert drop_group_boxes([a, group, b]) == [a, b]
+    assert drop_group_boxes([a, group]) == [a, group]  # two boxes alone: can't tell which is right, keep both
+
+
+def test_close_worker_with_distant_workers_behind_is_not_a_group():
+    from app.ppe_logic import drop_group_boxes
+
+    near = Detection("person", 0.9, (100, 50, 400, 700))
+    far1 = Detection("person", 0.8, (150, 100, 190, 220))  # much smaller: people far behind
+    far2 = Detection("person", 0.8, (300, 110, 340, 230))
+    assert drop_group_boxes([near, far1, far2]) == [near, far1, far2]

@@ -10,7 +10,8 @@ export const PPE_LABEL: Record<string, string> = {
 
 /** Behavioural violations (not PPE gaps): the offence is the behaviour being present. */
 export const BEHAVIOR_LABEL: Record<string, string> = {
-  phone_use: "Phone Use",
+  phone_use: "Phone use",
+  restricted_area: "Restricted area",
 };
 export const isBehavior = (k: string) => k in BEHAVIOR_LABEL;
 
@@ -63,3 +64,27 @@ export function dateRangeToEpoch(from: string, to: string): { start?: number; en
   }
   return out;
 }
+
+/** A violation's items as short phrases: "No helmet", "No vest", "Phone use", "Restricted area". */
+export const violationLabel = (k: string) => (isBehavior(k) ? BEHAVIOR_LABEL[k] : `No ${ppeLabel(k).toLowerCase()}`);
+
+/** 75 -> "1m 15s", 3700 -> "1h 1m", 8 -> "8s" */
+export function fmtDuration(sec: number): string {
+  const s = Math.max(0, Math.round(sec));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+/** "just now", "42s ago", "5m ago", "3h ago", then the date. */
+export function fmtAgo(epochSec: number, now = Date.now() / 1000): string {
+  const d = now - epochSec;
+  if (d < 5) return "just now";
+  if (d < 60) return `${Math.floor(d)}s ago`;
+  if (d < 3600) return `${Math.floor(d / 60)}m ago`;
+  if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
+  return fmtDateTime(epochSec);
+}
+
+export const fmtPct = (x: number | null | undefined, digits = 1) => (x == null ? "–" : `${(x * 100).toFixed(digits)}%`);
+export const fmtInt = (n: number) => n.toLocaleString("en-IN");

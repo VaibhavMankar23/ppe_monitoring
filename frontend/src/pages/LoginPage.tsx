@@ -1,79 +1,15 @@
-import { useState, type FormEvent } from "react";
-import { Button, Field, Icon, Input } from "../components/ui";
+import { useEffect, useState, type FormEvent } from "react";
+import { AuthFrame } from "../components/admin/AuthFrame";
+import { PasswordField } from "../components/admin/PasswordPolicy";
+import { Button, Field, Input, Notice } from "../components/ui";
 import { ApiError } from "../lib/api";
 import { navigate, takeNext } from "../lib/router";
 import { useAuth } from "../state/auth";
-import logoUrl from "../assets/mai-mahindra.png";
 
-/** The company's official m·ai wordmark, shown at its natural aspect ratio.
- *  This is the company brand identity — it is never restyled, boxed into a
- *  square, or replaced. Height is set by the caller via className. */
-export function BrandMark({ className = "w-14" }: { className?: string }) {
-  // Explicit width + auto height (with intrinsic dims) keeps the wordmark's aspect
-  // ratio and never collapses inside a shrink-to-fit flex container. Width is set
-  // by the caller via className.
-  return <img src={logoUrl} alt="MAI" width={200} height={86} className={`h-auto ${className}`} />;
-}
-
-/** Company logo on a clean white card — used on the tinted canvas (auth / splash)
- *  where the logo's own white background would otherwise show a faint seam. */
-export function BrandCard({ className = "w-16" }: { className?: string }) {
-  return (
-    <span className="inline-flex shrink-0 items-center rounded-md bg-white px-2.5 py-1.5 ring-1 ring-border">
-      <BrandMark className={className} />
-    </span>
-  );
-}
-
-/** Company logo + product name lockup: the maker (logo) · a hairline · the product. */
-export function BrandLockup() {
-  return (
-    <div className="flex items-center gap-3">
-      <BrandCard />
-      <span className="h-9 w-px bg-border" aria-hidden />
-      <div>
-        <p className="text-[15px] font-semibold leading-tight tracking-tight">PPE Compliance</p>
-        <p className="text-[13px] text-muted">Safety monitoring</p>
-      </div>
-    </div>
-  );
-}
-
-/** Centered card layout shared by the sign-in and forced password-change screens. */
-export function AuthShell({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
-  return (
-    <main id="main" className="flex min-h-screen items-center justify-center bg-bg px-4 py-10">
-      <div className="w-full max-w-[400px]">
-        <div className="mb-6"><BrandLockup /></div>
-        <div className="rounded-xl border border-border bg-surface p-6 shadow-[var(--shadow-card)]">
-          <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
-          <p className="mt-1 text-[13px] text-muted">{subtitle}</p>
-          <div className="mt-5">{children}</div>
-        </div>
-      </div>
-    </main>
-  );
-}
-
-export function PasswordInput({ id, value, onChange, autoComplete, invalid, autoFocus }: {
-  id: string; value: string; onChange: (v: string) => void; autoComplete: string; invalid?: boolean; autoFocus?: boolean;
-}) {
-  const [show, setShow] = useState(false);
-  const [caps, setCaps] = useState(false);
-  return (
-    <>
-      <div className="relative">
-        <Input id={id} type={show ? "text" : "password"} value={value} autoComplete={autoComplete} invalid={invalid}
-          autoFocus={autoFocus} className="pr-10" onChange={(e) => onChange(e.target.value)}
-          onKeyUp={(e) => setCaps(e.getModifierState?.("CapsLock") ?? false)} />
-        <button type="button" onClick={() => setShow((s) => !s)} aria-label={show ? "Hide password" : "Show password"}
-          aria-pressed={show} className="absolute top-1/2 right-1 flex h-7 w-8 -translate-y-1/2 items-center justify-center rounded-md text-muted hover:bg-subtle hover:text-text">
-          {show ? <Icon.eyeOff size={16} /> : <Icon.eye size={16} />}
-        </button>
-      </div>
-      {caps && <p className="text-xs font-medium text-warning-text">Caps Lock is on</p>}
-    </>
-  );
+/** Seconds the server asks to wait ("… Try again in 42 s."); null when it does not say. */
+function waitSeconds(err: ApiError): number | null {
+  const m = /(\d+)\s*s\b/.exec(err.message);
+  return m ? Number(m[1]) : null;
 }
 
 export function LoginPage() {
@@ -82,51 +18,86 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [missing, setMissing] = useState(false);
   const [busy, setBusy] = useState(false);
+  // too many failed attempts: the server locks this username for a while
+  const [lockedUntil, setLockedUntil] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (lockedUntil === null) return;
+    const t = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(t);
+  }, [lockedUntil]);
+
+  const wait = lockedUntil === null ? 0 : Math.max(0, Math.ceil((lockedUntil - now) / 1000));
+  useEffect(() => {
+    if (lockedUntil !== null && wait === 0) {
+      setLockedUntil(null);
+      setError(null); // the server's "try again in N s" no longer applies
+    }
+  }, [lockedUntil, wait]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (busy || wait > 0) return;
     if (!username.trim() || !password) {
+      setMissing(true);
       setError("Enter your username and password.");
       return;
     }
+    setMissing(false);
     setBusy(true);
     setError(null);
     try {
       const me = await login(username.trim(), password, remember);
+      // an account that must change its password is taken to that screen by the app instead
       if (!me.must_change_password) navigate(takeNext(), true);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : (err as Error).message);
+      if (err instanceof ApiError && (err.status === 429 || err.code === "too_many_attempts")) {
+        const s = waitSeconds(err);
+        if (s !== null) {
+          setNow(Date.now());
+          setLockedUntil(Date.now() + s * 1000);
+        }
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : "Sign-in failed. Try again.");
+      }
       setPassword("");
     } finally {
       setBusy(false);
     }
   };
 
+  const locked = wait > 0;
   return (
-    <AuthShell title="Sign in" subtitle="Use the account your administrator gave you.">
-      <form className="flex flex-col gap-4" onSubmit={submit} noValidate aria-describedby={error ? "login-error" : undefined}>
-        {error && (
-          <div id="login-error" role="alert" className="flex gap-2 rounded-lg border border-danger/30 bg-danger-soft px-3 py-2.5 text-[13px] font-medium text-danger">
-            <Icon.alert size={16} className="mt-px shrink-0" />{error}
-          </div>
-        )}
-        <Field id="login-user" label="Username">
-          <Input autoFocus id="login-user" value={username} autoComplete="username" autoCapitalize="none" spellCheck={false}
-            invalid={!!error && !username.trim()} onChange={(e) => setUsername(e.target.value)} />
+    <AuthFrame title="Welcome back" intro="Sign in with the account your plant administrator gave you."
+      footer="Repeated wrong passwords lock the account for a short while. Sign-ins and changes are recorded in the audit trail.">
+      <form className="grid gap-4" onSubmit={submit} noValidate>
+        {locked ? (
+          <Notice tone="bad" title="Too many failed sign-in attempts">
+            Try again in <span className="num">{wait} s</span>.
+          </Notice>
+        ) : error && <Notice tone="bad">{error}</Notice>}
+        <Field label="Username">
+          {(id) => (
+            <Input id={id} name="username" value={username} autoComplete="username" autoCapitalize="none" autoCorrect="off"
+              spellCheck={false} autoFocus invalid={missing && !username.trim()} onChange={(e) => setUsername(e.target.value)} />
+          )}
         </Field>
-        <Field id="login-pass" label="Password">
-          <PasswordInput id="login-pass" value={password} onChange={setPassword} autoComplete="current-password" invalid={!!error && !password} />
+        <Field label="Password">
+          {(id) => <PasswordField id={id} value={password} onChange={setPassword} autoComplete="current-password" invalid={missing && !password} />}
         </Field>
-        <label className="flex cursor-pointer items-start gap-2.5 text-[13px]">
-          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--color-primary)]" />
+        <label className="flex cursor-pointer items-start gap-2.5 text-[13.5px] text-ink">
+          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} className="mt-0.5 size-4 accent-[var(--pri)]" />
           <span>
-            <span className="font-medium">Remember me</span>
-            <span className="block text-xs text-muted">Stay signed in on this device for 30 days. Leave off on shared computers.</span>
+            Keep me signed in on this device
+            <span className="block text-xs text-ink-3">For 30 days. Leave off on a shared computer.</span>
           </span>
         </label>
-        <Button type="submit" variant="primary" loading={busy} className="mt-1 w-full">{busy ? "Signing in…" : "Sign in"}</Button>
+        <Button type="submit" variant="primary" loading={busy} disabled={locked} className="h-[46px] w-full text-[14.5px]">Sign in</Button>
       </form>
-    </AuthShell>
+    </AuthFrame>
   );
 }

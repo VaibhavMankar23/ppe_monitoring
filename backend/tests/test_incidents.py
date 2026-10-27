@@ -138,6 +138,25 @@ def test_id_change_elsewhere_or_long_after_is_a_new_violation():
     assert len(d.update([worker(3, ["helmet"])], 60.0)) == 1
 
 
+def test_recurrence_at_the_same_spot_under_a_new_id_within_the_cooldown_is_the_same_violation():
+    # low detection rate: the worker is lost between checks and comes back under a fresh ID each time
+    d = AlertDebouncer(min_frames=1, min_seconds=0, cooldown=120, handoff_seconds=4, gap=10)
+    assert len(d.update([worker(1, ["helmet"])], 0.0)) == 1
+    near = (130.0, 100.0, 190.0, 280.0)  # same spot, but not overlapping enough to count as one box (IoU 0.33)
+    for k, t in enumerate((25.0, 50.0, 80.0, 110.0)):  # long after the hand-off window, within the cooldown
+        step = d.step([worker(10 + k, ["helmet"], near)], t)
+        assert step.fired == [] and step.extended and step.extended[0].tracks >= {1, 10 + k}
+    # once the cooldown since the start has passed, the spot raises a new violation again
+    assert len(d.update([worker(20, ["helmet"], near)], 130.0)) == 1
+
+
+def test_recurrence_at_the_same_spot_with_different_ppe_is_a_new_violation():
+    d = AlertDebouncer(min_frames=1, min_seconds=0, cooldown=120, handoff_seconds=4, gap=10)
+    assert len(d.update([worker(1, ["helmet"])], 0.0)) == 1
+    near = (130.0, 100.0, 190.0, 280.0)
+    assert len(d.update([worker(2, ["vest"], near)], 40.0)) == 1  # nothing in common with the earlier incident
+
+
 def test_two_real_people_side_by_side_are_two_violations():
     d = AlertDebouncer(min_frames=1, min_seconds=0, cooldown=30)
     a, b = (100.0, 100.0, 160.0, 280.0), (130.0, 100.0, 190.0, 280.0)  # IoU 0.33: not a double capture

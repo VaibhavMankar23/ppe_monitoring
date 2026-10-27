@@ -27,6 +27,10 @@ PPE_ITEMS: frozenset[str] = frozenset(
 # face zone. The detection class that raises each one is in BEHAVIOR_CLASS.
 BEHAVIOR_ITEMS: frozenset[str] = frozenset({"phone_use"})
 BEHAVIOR_CLASS: dict[str, str] = {"phone_use": "phone"}  # behaviour item -> detection class
+# Zone items: violations raised by *where* a worker stands (a camera's `restricted` zones), not by
+# a detection class. Same vocabulary as behaviours: "missing" = offence.
+ZONE_ITEMS: frozenset[str] = frozenset({"restricted_area"})
+VIOLATION_ITEMS: frozenset[str] = PPE_ITEMS | BEHAVIOR_ITEMS | ZONE_ITEMS  # everything `missing` may hold
 NEGATIVE_PREFIX = "no_"
 
 # item -> (x1, y1, x2, y2) as fractions of the person box.
@@ -75,6 +79,8 @@ class PersonCompliance:
     status: PersonStatus
     items: dict[str, ItemStatus]
     ppe: list[Detection] = field(default_factory=list)
+    zone: str | None = None  # name of the zone the worker stands in (None = no zone)
+    monitored: bool = True  # False = outside the camera's monitored area: PPE is not judged
 
     @property
     def missing(self) -> list[str]:
@@ -112,6 +118,26 @@ def body_region(person: Box, item: str) -> Box:
 
 def _center(b: Box) -> tuple[float, float]:
     return ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+
+
+def drop_group_boxes(persons: list[Detection], contain: float = 0.8, min_scale: float = 0.6) -> list[Detection]:
+    """Remove "group" person boxes: one box drawn around two or more workers standing together.
+
+    The detector often returns such a box in addition to (or alternating with) a box per worker.
+    Tracked as a person it double-counts the workers inside it and gets the union of their PPE. A
+    box is a group box when at least two other person boxes lie (>= `contain`) inside it and are of
+    similar height (>= `min_scale` of its height) - a worker close to the camera with small, distant
+    workers behind them is not a group."""
+    if len(persons) < 3:
+        return persons
+    keep: list[Detection] = []
+    for d in persons:
+        h = d.box[3] - d.box[1]
+        inside = sum(1 for o in persons if o is not d and containment(o.box, d.box) >= contain
+                     and o.box[3] - o.box[1] >= min_scale * h)
+        if inside < 2:
+            keep.append(d)
+    return keep
 
 
 # ---------------------------------------------------------------- association
@@ -268,6 +294,81 @@ def evaluate_frame(
             items[b] = "unknown" if too_small else behavior_status(dets, b)
         out.append(PersonCompliance(p.track_id, p.box, p.conf, overall_status(items), items, dets))
     return out
+
+
+# ---------------------------------------------------------------- zones
+
+Point = tuple[float, float]
+
+
+@dataclass(frozen=True)
+class Zone:
+    """A polygon on the camera image, in fractions of the frame (0..1, origin top-left).
+
+    * monitor: PPE is only judged for workers standing inside (when a camera has any monitor zone);
+    * ignore: workers standing inside are never judged (a pedestrian walkway, an office window);
+    * restricted: standing inside is itself a violation (`restricted_area`)."""
+
+    name: str
+    kind: Literal["monitor", "ignore", "restricted"]
+    points: tuple[Point, ...]
+
+
+def point_in_polygon(pt: Point, poly: "tuple[Point, ...] | list[Point]") -> bool:
+    """Ray casting; points exactly on an edge may fall either way (irrelevant at pixel scale)."""
+    x, y = pt
+    inside = False
+    j = len(poly) - 1
+    for i in range(len(poly)):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def foot_point(box: Box, frame_size: tuple[int, int]) -> Point:
+    """Where the worker stands, as frame fractions: the bottom-centre of the person box. The feet
+    are the one part of a person that lies on the floor plane the zones are drawn on."""
+    w, h = frame_size
+    return ((box[0] + box[2]) / 2 / max(1, w), min(box[3], h) / max(1, h))
+
+
+def apply_zones(people: list[PersonCompliance], zones: "list[Zone] | tuple[Zone, ...]",
+                frame_size: tuple[int, int]) -> list[PersonCompliance]:
+    """Apply a camera's zones to one frame's (unsmoothed) results, in place.
+
+    Outside the monitored area every PPE / behaviour item becomes "unknown", so the worker is
+    neither compliant nor a violation and is not counted. With restricted zones configured, every
+    worker gets a `restricted_area` item: "missing" (offence) inside one, "present" otherwise."""
+    if not zones:
+        return people
+    monitor = [z for z in zones if z.kind == "monitor"]
+    ignore = [z for z in zones if z.kind == "ignore"]
+    restricted = [z for z in zones if z.kind == "restricted"]
+    for p in people:
+        pt = foot_point(p.box, frame_size)
+        hit = lambda zs: next((z for z in zs if point_in_polygon(pt, z.points)), None)  # noqa: E731
+        r, i, m = hit(restricted), hit(ignore), hit(monitor)
+        p.monitored = i is None and (not monitor or m is not None)
+        p.zone = (r or i or m).name if (r or i or m) else None
+        if not p.monitored:
+            p.items = {k: "unknown" for k in p.items}
+        if restricted:
+            p.items["restricted_area"] = "missing" if r is not None else "present"
+        p.status = overall_status(p.items)
+    return people
+
+
+def mask_unmonitored(people: list[PersonCompliance]) -> list[PersonCompliance]:
+    """After smoothing: a worker outside the monitored area is not judged *now*, whatever the
+    smoothed history of the frames before they left it says. Zone items keep their smoothed value."""
+    for p in people:
+        if not p.monitored:
+            p.items = {k: (v if k in ZONE_ITEMS else "unknown") for k, v in p.items.items()}
+            p.status = overall_status(p.items)
+    return people
 
 
 # ---------------------------------------------------------------- person-crop refinement

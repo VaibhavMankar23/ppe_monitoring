@@ -5,7 +5,9 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from .ppe_logic import BEHAVIOR_ITEMS, Detection, PersonCompliance
+from .ppe_logic import BEHAVIOR_ITEMS as _BEHAVIOR, ZONE_ITEMS, Detection, PersonCompliance
+
+BEHAVIOR_ITEMS = _BEHAVIOR | ZONE_ITEMS  # captioned as-is (PHONE, RESTRICTED AREA), not as "NO <item>"
 
 # BGR (OpenCV order). Match the UI palette (success #16A34A, danger #DC2626, warning #D97706),
 # lifted slightly so they stay readable on dark video; every box also gets a dark outline.
@@ -25,7 +27,7 @@ STATUS_COLOR = {"compliant": GREEN, "non_compliant": RED, "unknown": AMBER}
 
 SHORT = {"helmet": "helmet", "vest": "vest", "gloves": "gloves", "goggles": "goggles",
          "boots": "boots", "mask": "mask", "ear_protection": "ear"}
-BEHAVIOR_SHORT = {"phone_use": "PHONE"}
+BEHAVIOR_SHORT = {"phone_use": "PHONE", "restricted_area": "RESTRICTED AREA"}
 
 
 def violation_text(track_id: int, missing: list[str]) -> str:
@@ -61,6 +63,10 @@ def draw(img: np.ndarray, people: list[PersonCompliance], stray: list[Detection]
         cv2.rectangle(img, (x1, y1), (x2, y2), GREY, 1)
 
     for p in people:
+        if not p.monitored and p.status == "unknown":  # outside the monitored area: shown, not judged
+            x1, y1, x2, y2 = map(int, p.box)
+            cv2.rectangle(img, (x1, y1), (x2, y2), GREY, 1)
+            continue
         color = STATUS_COLOR[p.status]
         for d in p.ppe:
             x1, y1, x2, y2 = map(int, d.box)

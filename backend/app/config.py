@@ -99,7 +99,7 @@ class AlertConfig(_Model):
     # one violation per incident: while the worker stays non-compliant the stored violation is extended;
     # the incident ends after `event_gap_seconds` without the violation. A new violation for the same
     # worker needs the incident to have ended and `cooldown_seconds` to have passed since it began.
-    cooldown_seconds: float = Field(30.0, ge=0, le=86400)
+    cooldown_seconds: float = Field(120.0, ge=0, le=86400)
     event_gap_seconds: float = Field(10.0, ge=0, le=600)
     snapshot_quality: int = Field(85, ge=30, le=100)
     retention_days: int = Field(30, ge=0, le=3650)  # 0 = keep forever
@@ -138,6 +138,21 @@ class SourceConfig(_Model):
         return v.strip()
 
 
+class ZoneConfig(_Model):
+    """A polygon drawn on the camera image (Camera > Zones). Points are fractions of the frame."""
+    name: str = Field(min_length=1, max_length=40)
+    # monitor: judge PPE only inside | ignore: never judge inside | restricted: being inside is a violation
+    type: Literal["monitor", "ignore", "restricted"] = "monitor"
+    points: list[tuple[float, float]] = Field(min_length=3, max_length=32)
+
+    @field_validator("points")
+    @classmethod
+    def _in_frame(cls, v: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        if any(not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0) for x, y in v):
+            raise ValueError("zone points must be fractions of the frame (0..1)")
+        return [(round(x, 4), round(y, 4)) for x, y in v]
+
+
 class StreamConfig(_Model):
     id: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
     name: str = Field(min_length=1, max_length=64)
@@ -150,6 +165,16 @@ class StreamConfig(_Model):
     priority: Literal["high", "normal", "low"] = "normal"
     # Raise a violation when a worker is using a phone. Needs model.phone_weights to be set.
     detect_phone: bool = False
+    # Where on the image the rules apply (empty = the whole frame is monitored).
+    zones: list[ZoneConfig] = Field(default_factory=list, max_length=16)
+
+    @field_validator("zones")
+    @classmethod
+    def _unique_zone_names(cls, v: list[ZoneConfig]) -> list[ZoneConfig]:
+        names = [z.name.strip().lower() for z in v]
+        if len(set(names)) != len(names):
+            raise ValueError("zone names must be unique within a camera")
+        return v
 
     @field_validator("required_ppe")
     @classmethod
@@ -213,7 +238,7 @@ class AppConfig(_Model):
     alerts: AlertConfig = Field(default_factory=AlertConfig)
     alarm: AlarmConfig = Field(default_factory=AlarmConfig)
     analytics: AnalyticsConfig = Field(default_factory=AnalyticsConfig)
-    streams: list[StreamConfig] = Field(default_factory=list, max_length=32)  # empty = add cameras from the UI
+    streams: list[StreamConfig] = Field(default_factory=list, max_length=64)  # empty = add cameras from the UI; sized for a 40-45 camera plant
 
     @field_validator("streams")
     @classmethod
