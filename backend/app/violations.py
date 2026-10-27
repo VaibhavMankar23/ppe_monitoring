@@ -73,7 +73,8 @@ class AlertDebouncer:
       violation. An incident ends after `gap` s without the violation; a new violation for the
       same worker needs the incident to have ended AND `cooldown` s to have passed since it began;
     * track-ID changes: a new track at the spot where an incident's worker was last seen (tracker
-      re-acquired them after an occlusion), or a second box heavily overlapping it (one worker
+      re-acquired them after an occlusion, or the same PPE goes missing there again within the
+      cooldown under a fresh ID), or a second box heavily overlapping it (one worker
       captured twice), joins that incident instead of raising its own. "Heavily overlapping" also
       covers a box mostly inside the other one: the detector often alternates between one box around
       two workers standing together and a box per worker, each getting its own track ID.
@@ -112,9 +113,14 @@ class AlertDebouncer:
             if any(iou(p.box, b) >= self.dedup_iou or _contained(p.box, b) >= self.dedup_contain
                    for b in (inc.member_boxes or {0: inc.box}).values()):
                 return inc  # the same worker(s) captured twice / as a group box
-            others_visible = bool((inc.tracks - {p.track_id}) & visible)
-            if others_visible or now - inc.last_seen > max(self.handoff_seconds, self.gap):
-                continue  # its worker is still in view (two real people), or it's too old for a hand-off
+            if (inc.tracks - {p.track_id}) & visible:
+                continue  # its worker is still in view: two real people
+            # a hand-off right after the worker was lost, or the same PPE missing again at the same spot
+            # within the cooldown: at low detection rates the tracker hands one worker a fresh ID almost
+            # every time they are lost, and without this each recurrence became a separate violation
+            recent = now - inc.last_seen <= max(self.handoff_seconds, self.gap)
+            if not recent and not (set(p.missing) & inc.missing):
+                continue
             ox, oy = (inc.box[0] + inc.box[2]) / 2, (inc.box[1] + inc.box[3]) / 2
             if ((cx - ox) ** 2 + (cy - oy) ** 2) ** 0.5 < 0.75 * h:  # re-acquired under a new ID
                 return inc

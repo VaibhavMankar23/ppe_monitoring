@@ -14,3 +14,4 @@ backend/data/
 data/
 config/
 backend/config.backup.*.yaml
+datasets/

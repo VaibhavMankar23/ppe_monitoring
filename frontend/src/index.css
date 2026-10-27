@@ -1,151 +1,238 @@
 @import "tailwindcss";
 
-/* Design tokens. The light theme is the default (registered via @theme so every
-   semantic bg/text/border utility exists); the dark theme re-declares the same
-   custom properties on `html.dark`, so switching a single class re-themes the
-   whole app at runtime. Keep every colour semantic — no raw palette classes in
-   components — so both themes stay in sync. */
-@theme {
-  /* "Operations Console" — a cool blue-grey canvas under white cards; calm chrome so
-     the safety semantics (success / danger / warning) carry the meaning. */
-  --color-bg: #EEF1F5;
-  --color-surface: #FFFFFF;
-  --color-subtle: #F1F4F8;
-  --color-border: #E4E8EF;
-  --color-border-strong: #D6DCE6;
-  --color-text: #0E1420;
-  --color-muted: #5B6472;
-  /* Signal blue: the single interactive/brand accent — primary actions, active nav,
-     keyboard focus. `primary-soft` is the wash behind active nav & primary badges. */
-  --color-primary: #1466E0;
-  --color-primary-hover: #0F52BE;
-  --color-primary-soft: #E7F0FE;
-  --color-on-primary: #FFFFFF;
-  /* Accent mirrors the signal blue (single-accent system): active-nav bar, highlights.
-     Safety meaning stays in success/danger/warning only. */
-  --color-accent: #1466E0;
-  --color-accent-hover: #0F52BE;
-  --color-success: #12965A;
-  --color-success-text: #0F7D4B; /* AA on white for small text */
-  --color-success-soft: #E3F5EC;
-  --color-danger: #E23048;
-  --color-danger-hover: #C41F38;
-  --color-danger-soft: #FCE7EA;
-  --color-warning: #C97A08;
-  --color-warning-text: #9A5B02;
-  --color-warning-soft: #FBF0DC;
-  --color-video: #0B1219;
-  --color-overlay: rgb(8 12 20 / 0.55); /* modal / media scrims */
-  --color-skeleton: #E4E8EF;            /* loading placeholder */
-
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
-
-  /* Cool near-black shadow tint. */
-  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.06);
-  --shadow-pop: 0 18px 44px -12px rgb(16 24 40 / 0.22), 0 6px 16px -8px rgb(16 24 40 / 0.12);
-
-  /* YAML syntax highlight (light) */
-  --yaml-key: #1466E0;
-  --yaml-str: #12965A;
-  --yaml-num: #B45309;
-  --yaml-bool: #7C3AED;
-  --yaml-com: #94A3B8;
-  --yaml-punct: #64748B;
+/* dark: follows the theme switch (data-theme), falling back to the OS setting */
+@custom-variant dark {
+  &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) {
+    @slot;
+  }
 }
 
-/* "Console" mode: a deep graphite-blue for a dim 24/7 control-room wall display,
-   with the signal blue brightened to read as the accent on dark surfaces. */
-html.dark {
+/*
+ * Design tokens: "Obsidian & Iris" (v3). Dark by default (control-room use), full light theme.
+ * One accent, iris violet, for interaction, selection and data: deliberately unlike every status
+ * colour. Status colours mean one thing each: ok = compliant / healthy, warn = degraded / needs a
+ * look, bad = violation / failure. The Mahindra logo is the only brand-red element.
+ * Video always sits on the dark "stage". Runtime variables: the theme switches without a rebuild.
+ */
+:root {
+  --topbar-h: 72px;
+  --bg: #08080a; --surface: #111114; --surface-2: #16161a; --surface-3: #1c1c22; --border: #24242b; --border-2: #303039;
+  --text: #f4f4f6; --text-2: #b6b6c0; --text-3: #85858f; --text-4: #575761;
+  --iris: #8b7cff; --iris-2: #5b4fd1; --iris-hover: #a597ff; --iris-soft: #1c1838; --iris-line: #393073; --iris-ink: #0b0820;
+  --pri: #f4f4f6; --pri-hover: #ffffff; --pri-ink: #0a0a0d;
+  --brand: #ff3b5c; --brand-soft: #2b0f16;
+  --nav: rgb(17 17 20 / 0.72); --nav-border: rgb(255 255 255 / 0.07);
+  --crit: #fb7185; --crit-soft: #2c1117; --crit-line: #5c2230;
+  --warn-c: #fbbf24; --warn-soft: #2a2008; --warn-line: #5a4512;
+  --ok-c: #34d399; --ok-soft: #0b2a20; --ok-line: #175a43;
+  --info: #8b7cff; --info-soft: #1c1838;
+  --glow: 0 0 0 1px rgb(139 124 255 / 0.35), 0 10px 40px -10px rgb(139 124 255 / 0.45);
+  --sh-xs: 0 1px 0 rgb(255 255 255 / 0.03);
+  --sh-md: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 16px 40px -20px rgb(0 0 0 / 0.7);
+  --sh-xl: 0 40px 100px -20px rgb(0 0 0 / 0.8), 0 0 0 1px rgb(255 255 255 / 0.05);
   color-scheme: dark;
-  --color-bg: #0B1017;
-  --color-surface: #121A24;
-  --color-subtle: #18222E;
-  --color-border: #223041;
-  --color-border-strong: #2C3D51;
-  --color-text: #E6ECF3;
-  --color-muted: #93A0B2;
-  --color-primary: #4C9BFF;       /* brightened signal blue: reads as the accent on dark surfaces */
-  --color-primary-hover: #6FB0FF;
-  --color-primary-soft: #152838;
-  --color-on-primary: #04121F;    /* dark ink sits on the bright primary fill */
-  --color-accent: #4C9BFF;
-  --color-accent-hover: #6FB0FF;
-  --color-success: #2CC27E;
-  --color-success-text: #55D6A0;
-  --color-success-soft: #10281E;
-  --color-danger: #FF5A72;
-  --color-danger-hover: #FF7385;
-  --color-danger-soft: #2C151B;
-  --color-warning: #F2A93B;
-  --color-warning-text: #F7C877;
-  --color-warning-soft: #2A1F0D;
-  --color-video: #05090E;
-  --color-overlay: rgb(0 0 0 / 0.66);
-  --color-skeleton: #1F2C3A;
-
-  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4);
-  --shadow-pop: 0 14px 34px -10px rgb(0 0 0 / 0.72), 0 4px 12px -6px rgb(0 0 0 / 0.55);
-
-  --yaml-key: #4C9BFF;
-  --yaml-str: #6EE7A8;
-  --yaml-num: #F0B860;
-  --yaml-bool: #C4A5FF;
-  --yaml-com: #64748B;
-  --yaml-punct: #93A9B2;
+}
+:root[data-theme="light"] {
+  --bg: #f6f6f8; --surface: #ffffff; --surface-2: #fafafb; --surface-3: #f0f0f4; --border: #e6e6ec; --border-2: #d6d6df;
+  --text: #0a0a0f; --text-2: #4a4a56; --text-3: #777784; --text-4: #a6a6b2;
+  --iris: #6d5bf6; --iris-2: #a99cff; --iris-hover: #5a47e6; --iris-soft: #f0edff; --iris-line: #d7d0ff; --iris-ink: #ffffff;
+  --pri: #0a0a0f; --pri-hover: #26262e; --pri-ink: #ffffff;
+  --brand: #e31837; --brand-soft: #fff0f2;
+  --nav: rgb(255 255 255 / 0.72); --nav-border: rgb(10 10 15 / 0.08);
+  --crit: #dc2626; --crit-soft: #fef1f1; --crit-line: #fbcaca;
+  --warn-c: #c76a06; --warn-soft: #fff6e8; --warn-line: #f6d59f;
+  --ok-c: #078a5e; --ok-soft: #e9f8f1; --ok-line: #b2e6cf;
+  --info: #6d5bf6; --info-soft: #f0edff;
+  --glow: 0 0 0 1px rgb(109 91 246 / 0.25), 0 8px 30px -8px rgb(109 91 246 / 0.35);
+  --sh-xs: 0 1px 2px rgb(10 10 15 / 0.04);
+  --sh-md: 0 1px 2px rgb(10 10 15 / 0.04), 0 12px 32px -18px rgb(10 10 15 / 0.18);
+  --sh-xl: 0 30px 80px -20px rgb(10 10 15 / 0.35), 0 4px 14px rgb(10 10 15 / 0.06);
+  color-scheme: light;
 }
 
-html { color-scheme: light; }
-html, body, #root { min-height: 100%; }
-body {
-  background: var(--color-bg);
-  color: var(--color-text);
-  font-family: var(--font-sans);
-  font-feature-settings: "cv11", "ss01";
-  -webkit-font-smoothing: antialiased;
+@theme {
+  --font-sans: "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --color-canvas: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-sunken: var(--surface-3);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-2);
+
+  --color-ink: var(--text);
+  --color-ink-2: var(--text-2);
+  --color-ink-3: var(--text-3);
+  --color-ink-4: var(--text-4);
+
+  /* the one accent (iris): interaction, selection, data */
+  --color-accent: var(--iris);
+  --color-accent-strong: var(--iris-hover);
+  --color-accent-soft: var(--iris-soft);
+  --color-accent-line: var(--iris-line);
+  --color-accent-ink: var(--iris-ink);
+  --color-data: var(--iris);
+  --color-data-2: var(--iris-2);
+  --color-data-soft: var(--iris-soft);
+
+  --color-pri: var(--pri);
+  --color-pri-hover: var(--pri-hover);
+  --color-pri-ink: var(--pri-ink);
+  --color-brand: var(--brand);
+  --color-brand-soft: var(--brand-soft);
+
+  --color-ok: var(--ok-c);
+  --color-ok-soft: var(--ok-soft);
+  --color-ok-line: var(--ok-line);
+  --color-warn: var(--warn-c);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-line: var(--warn-line);
+  --color-bad: var(--crit);
+  --color-bad-soft: var(--crit-soft);
+  --color-bad-line: var(--crit-line);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+
+  --color-stage: #050506;
+  --color-stage-2: #111114;
+  --color-stage-line: #24242b;
+  --color-stage-ink: #ececf1;
+  --color-stage-ink-2: #9a9aa6;
+
+  --radius-card: 16px;
+  --shadow-card: var(--sh-md);
+  --shadow-md: var(--sh-md);
+  --shadow-pop: var(--sh-xl);
 }
 
-/* Adient signature: a lime keyboard-focus ring on buttons, links and nav. Form
-   controls opt out (focus:outline-none) and keep their own navy focus ring. */
-:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    margin: 0;
+    font-feature-settings: "ss01", "cv11";
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(1200px 500px at 50% -200px, var(--iris-soft), transparent 70%);
+    background-repeat: no-repeat;
+  }
+  h1, h2, h3, h4 {
+    text-wrap: balance;
+    letter-spacing: -0.01em;
+  }
+  button:not(:disabled), [role="button"], summary, label[for], select {
+    cursor: pointer;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--color-accent-soft);
+  }
+  /* figures line up in tables, tiles and counters */
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+  .mono {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+  }
+  /* small uppercase label above a value or a group */
+  .eyebrow {
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+  }
 }
 
-/* Brief cross-fade only while a theme switch is in progress (added/removed in JS). */
-html.theme-anim, html.theme-anim *, html.theme-anim *::before, html.theme-anim *::after {
-  transition: background-color 0.22s ease, border-color 0.22s ease, color 0.22s ease, fill 0.22s ease, stroke 0.22s ease, box-shadow 0.22s ease !important;
+@layer components {
+  /* dense data table: sticky header, hairline rows */
+  .table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+  }
+  .table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--color-surface);
+    text-align: left;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-ink-3);
+    padding: 11px 18px;
+    border-bottom: 1px solid var(--color-line);
+    white-space: nowrap;
+  }
+  .table td {
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--color-line);
+    vertical-align: middle;
+  }
+  .table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+  .table tbody tr:hover td {
+    background: var(--color-surface-2);
+  }
+  .scroll-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
 }
 
-@keyframes toast-in {
-  from { opacity: 0; transform: translateY(8px); }
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
+  100% { box-shadow: 0 0 0 6px transparent; }
+}
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
 }
-.animate-toast-in { animation: toast-in 0.18s ease-out; }
-
-@keyframes flash-new {
-  from { box-shadow: 0 0 0 3px rgb(220 38 38 / 0.5); }
-  to { box-shadow: var(--shadow-card); }
+@keyframes slide-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: none; opacity: 1; }
 }
-.animate-flash-new { animation: flash-new 1.8s ease-out; }
+@keyframes shimmer {
+  to { background-position: -200% 0; }
+}
+.animate-rise { animation: rise 0.18s ease-out both; }
+@keyframes live-ping {
+  70% { box-shadow: 0 0 0 7px rgb(52 210 127 / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(52 210 127 / 0); }
+}
+.live-ping { box-shadow: 0 0 0 0 rgb(52 210 127 / 0.6); animation: live-ping 1.8s infinite; }
+@keyframes blink { 50% { opacity: 0.25; } }
+.blink { animation: blink 1.4s infinite; }
+@keyframes flash { 0% { background: var(--iris-soft); } 100% { background: transparent; } }
+.animate-slide-in { animation: slide-in 0.2s ease-out both; }
+.pulse-ring { animation: pulse-ring 1.4s ease-out infinite; }
+.skeleton {
+  background: linear-gradient(90deg, var(--color-sunken) 25%, var(--color-surface-2) 50%, var(--color-sunken) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+  border-radius: 6px;
+}
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
-/* YAML editor: textarea layered over a highlighted <pre> */
-.yaml-layer {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 20px;
-  tab-size: 2;
-  white-space: pre;
-  padding: 12px 14px;
-  margin: 0;
+@media print {
+  body { background: #fff; }
+  .no-print { display: none !important; }
 }
-.yaml-key { color: var(--yaml-key); }
-.yaml-str { color: var(--yaml-str); }
-.yaml-num { color: var(--yaml-num); }
-.yaml-bool { color: var(--yaml-bool); }
-.yaml-com { color: var(--yaml-com); font-style: italic; }
-.yaml-punct { color: var(--yaml-punct); }

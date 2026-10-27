@@ -15,7 +15,7 @@ from typing import Any
 MISSING = "<unset>"
 
 # What an Admin may change: these keys of an *existing* camera, nothing else.
-ADMIN_STREAM_KEYS = ("name", "enabled", "required_ppe", "confidence", "priority", "source")
+ADMIN_STREAM_KEYS = ("name", "enabled", "required_ppe", "confidence", "priority", "source", "zones")
 _ADMIN_PATH = re.compile(r"^streams\.[^.]+\.(" + "|".join(ADMIN_STREAM_KEYS) + r")(\..+)?$")
 
 

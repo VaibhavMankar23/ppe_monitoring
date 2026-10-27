@@ -62,17 +62,55 @@ class ViolationRow(Base):
     original: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, default=None)  # clean full frame
     crop: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, default=None)  # clean full-res person crop
     evidence_purged_at: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    # --- human review: was the system right? (NULL = not reviewed yet)
+    review: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)  # valid | false_alarm
+    review_reason: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)  # see REVIEW_REASONS
+    review_note: Mapped[str | None] = mapped_column(String(280), nullable=True, default=None)
+    review_by: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    review_at: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
 
+
+REVIEW_VERDICTS = ("valid", "false_alarm")
+# why a violation was a false alarm: each one points at a different fix (model, rules, camera)
+REVIEW_REASONS: dict[str, str] = {
+    "ppe_worn": "PPE was worn (model missed it)",
+    "not_a_person": "Not a person",
+    "wrong_person": "PPE assigned to the wrong person",
+    "not_required_here": "PPE not required in this area",
+    "duplicate": "Duplicate of another violation",
+    "poor_image": "Image too unclear to judge",
+    "other": "Other",
+}
+
+DATASET_README = """PPE monitor - review dataset export
+
+images/        clean full-resolution frames, one per exported violation
+labels/        YOLO pre-labels (class 0 = person): the worker the violation was raised for.
+               Empty file = a reviewer marked the detection as "not a person" (hard negative).
+manifest.csv   per image: what the system flagged, and the reviewer's verdict and reason.
+data.yaml      Ultralytics dataset stub.
+
+These are PRE-LABELS, not ground truth. Before training:
+  1. open the set in an annotation tool (CVAT, Label Studio, Roboflow) and add the PPE boxes
+     and any other people in the frame;
+  2. use manifest.csv to find what to fix: review_reason=ppe_worn means the model missed PPE
+     that was worn - label that PPE; not_a_person means the box was wrong - keep the image
+     as a negative;
+  3. split train/val by camera and by day, not randomly: frames from one recording are
+     near-duplicates and a random split overstates accuracy.
+"""
 
 # columns added after the first release: (name, SQL type) - added in place by ViolationStore._migrate
 _ADDED_COLUMNS = (("run_id", "VARCHAR(48)"), ("ack_at", "FLOAT"), ("ack_by", "VARCHAR(64)"),
                   ("end_ts", "FLOAT"), ("observations", "INTEGER"), ("state", "VARCHAR(16)"),
                   ("confidence", "FLOAT"), ("meta", "TEXT"), ("original", "BLOB"), ("crop", "BLOB"),
-                  ("evidence_purged_at", "FLOAT"))
+                  ("evidence_purged_at", "FLOAT"), ("review", "VARCHAR(16)"), ("review_reason", "VARCHAR(32)"),
+                  ("review_note", "VARCHAR(280)"), ("review_by", "VARCHAR(64)"), ("review_at", "FLOAT"))
 
 # columns of the list view (no images except the thumbnail)
 _LIST_COLS = ("id", "ts", "stream_id", "stream_name", "track_id", "missing", "thumb", "ack_at", "ack_by",
-              "end_ts", "observations", "state", "confidence", "evidence_purged_at")
+              "end_ts", "observations", "state", "confidence", "evidence_purged_at",
+              "review", "review_reason", "review_note", "review_by", "review_at")
 
 OBS_BUCKET = 900  # s: observation counters are kept per camera per 15 minutes (aligns with every UTC offset)
 
@@ -99,6 +137,7 @@ class ViolationFilter:
     stream_id: str | None = None
     ppe: str | None = None  # one PPE item that must be in `missing`
     acknowledged: bool | None = None  # None = both
+    review: str | None = None  # valid | false_alarm | unreviewed; None = all
 
 
 def _b64(data: bytes) -> str:
@@ -131,6 +170,8 @@ def row_to_dict(r: ViolationRow, *, image: bool = False, extra: tuple[str, ...] 
         "observations": r.observations or 1,
         "confidence": r.confidence,
         "evidence_purged_at": r.evidence_purged_at,
+        "review": ({"verdict": r.review, "reason": r.review_reason, "note": r.review_note or "",
+                    "by": r.review_by, "at": r.review_at} if r.review else None),
     }
     if image:
         d["image"] = _b64(r.image)
@@ -281,6 +322,24 @@ class ViolationStore:
                 return None
         return self.get(vid, image=False)
 
+    def set_review(self, vid: int, verdict: str | None, username: str, reason: str | None = None,
+                   note: str = "", ts: float | None = None) -> dict[str, Any] | None:
+        """Record a reviewer's verdict (None clears it). A reviewed violation counts as handled, so
+        it is acknowledged too if nobody did that yet. Returns None when the violation doesn't exist."""
+        t = ts or time.time()
+        values: dict[str, Any] = {
+            "review": verdict, "review_reason": reason if verdict == "false_alarm" else None,
+            "review_note": (note or "").strip()[:280] or None if verdict else None,
+            "review_by": username if verdict else None, "review_at": t if verdict else None,
+        }
+        with self._write_lock, Session(self.engine) as s:
+            n = s.execute(update(ViolationRow).where(ViolationRow.id == vid).values(**values)).rowcount
+            if n and verdict:
+                s.execute(update(ViolationRow).where(ViolationRow.id == vid, ViolationRow.ack_at.is_(None))
+                          .values(ack_at=t, ack_by=username))
+            s.commit()
+        return self.get(vid, image=False) if n else None
+
     def add_observations(self, stream_id: str, bucket: float, seen: int, violating: int) -> None:
         """Add to a camera's worker counters for one bucket (upsert)."""
         if not seen and not violating:
@@ -350,6 +409,10 @@ class ViolationStore:
             stmt = stmt.where(ViolationRow.ack_at.is_not(None))
         elif f.acknowledged is False:
             stmt = stmt.where(ViolationRow.ack_at.is_(None))
+        if f.review == "unreviewed":
+            stmt = stmt.where(ViolationRow.review.is_(None))
+        elif f.review:
+            stmt = stmt.where(ViolationRow.review == f.review)
         return stmt
 
     def list(self, f: ViolationFilter, limit: int = 50, before_id: int | None = None) -> dict[str, Any]:
@@ -379,16 +442,17 @@ class ViolationStore:
 
     def iter_rows(self, f: ViolationFilter) -> Iterator[tuple[Any, ...]]:
         """(id, ts, stream_id, stream_name, track_id, missing list, ack_at, ack_by,
-        end_ts, observations, confidence, meta), newest first."""
+        end_ts, observations, confidence, meta, review, review_reason, review_by), newest first."""
         stmt = self._where(select(ViolationRow.id, ViolationRow.ts, ViolationRow.stream_id, ViolationRow.stream_name,
                                   ViolationRow.track_id, ViolationRow.missing, ViolationRow.ack_at,
                                   ViolationRow.ack_by, ViolationRow.end_ts, ViolationRow.observations,
-                                  ViolationRow.confidence, ViolationRow.meta),
+                                  ViolationRow.confidence, ViolationRow.meta, ViolationRow.review,
+                                  ViolationRow.review_reason, ViolationRow.review_by),
                            f).order_by(ViolationRow.ts.desc(), ViolationRow.id.desc())
         with Session(self.engine) as s:
             for r in s.execute(stmt):
                 yield (r[0], r[1], r[2], r[3], r[4], json.loads(r[5]), r[6], r[7], r[8], r[9], r[10],
-                       json.loads(r[11]) if r[11] else None)
+                       json.loads(r[11]) if r[11] else None, r[12], r[13], r[14])
 
     def export_csv(self, f: ViolationFilter) -> str:
         buf = io.StringIO()
@@ -396,15 +460,62 @@ class ViolationStore:
         # the first nine columns are unchanged from earlier versions; event / provenance columns follow
         w.writerow(["id", "timestamp_utc", "local_time", "camera_id", "camera_name", "track_id", "missing_ppe",
                     "acknowledged_at_utc", "acknowledged_by", "last_seen_utc", "duration_s", "observations",
-                    "confidence", "model"])
-        for vid, ts, sid, name, tid, missing, ack_at, ack_by, end_ts, obs, conf, meta in self.iter_rows(f):
+                    "confidence", "model", "review", "review_reason", "reviewed_by"])
+        for vid, ts, sid, name, tid, missing, ack_at, ack_by, end_ts, obs, conf, meta, rev, rev_reason, rev_by in self.iter_rows(f):
             local = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
             end = end_ts if end_ts is not None else ts
             model = ((meta or {}).get("model") or {}).get("weights", "")
             w.writerow([vid, _iso(ts), local, sid, name, tid, ";".join(missing), _iso(ack_at) if ack_at else "",
                         ack_by or "", _iso(end), round(max(0.0, end - ts), 1), obs or 1,
-                        "" if conf is None else round(conf, 3), model])
+                        "" if conf is None else round(conf, 3), model, rev or "", rev_reason or "", rev_by or ""])
         return buf.getvalue()
+
+    def export_dataset(self, f: ViolationFilter, out: Any, limit: int = 500) -> int:
+        """Write a training-data zip of the newest `limit` matching violations that still have their
+        clean original frame. Layout (Ultralytics YOLO): images/, labels/, data.yaml, manifest.csv.
+
+        The label files are *pre-labels*, not ground truth: one `person` box per image (the worker the
+        violation was raised for), or an empty file when a reviewer said it was not a person - a hard
+        negative. PPE boxes must be added in an annotation tool; manifest.csv carries the reviewer's
+        verdict for every image so the annotator knows what the model got wrong. Returns images written."""
+        import zipfile
+
+        stmt = self._where(select(ViolationRow.id, ViolationRow.ts, ViolationRow.stream_id, ViolationRow.missing,
+                                  ViolationRow.confidence, ViolationRow.meta, ViolationRow.review,
+                                  ViolationRow.review_reason, ViolationRow.review_note), f) \
+            .where(ViolationRow.original.is_not(None)).order_by(ViolationRow.ts.desc(), ViolationRow.id.desc()) \
+            .limit(max(1, min(limit, 2000)))
+        man = io.StringIO()
+        mw = csv.writer(man)
+        mw.writerow(["image", "violation_id", "timestamp_utc", "camera_id", "flagged_as_missing", "confidence",
+                     "review", "review_reason", "review_note", "person_box_xyxy_px", "frame_w", "frame_h"])
+        n = 0
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z, Session(self.engine) as s:  # JPEGs don't compress
+            rows = s.execute(stmt).all()
+            for vid, ts, sid, missing, conf, meta, rev, reason, note in rows:
+                img = s.scalar(select(ViolationRow.original).where(ViolationRow.id == vid))
+                if not img:
+                    continue
+                det = (json.loads(meta) if meta else {}).get("detection") or {}
+                box, size = det.get("box"), det.get("frame_size")
+                name = f"v{vid:07d}"
+                label = ""
+                if box and size and reason != "not_a_person":
+                    w, h = size
+                    cx, cy = (box[0] + box[2]) / 2 / w, (box[1] + box[3]) / 2 / h
+                    bw, bh = (box[2] - box[0]) / w, (box[3] - box[1]) / h
+                    label = f"0 {min(1, max(0, cx)):.6f} {min(1, max(0, cy)):.6f} {min(1, bw):.6f} {min(1, bh):.6f}\n"
+                z.writestr(f"images/{name}.jpg", img)
+                z.writestr(f"labels/{name}.txt", label)
+                mw.writerow([f"images/{name}.jpg", vid, _iso(ts), sid, ";".join(json.loads(missing)),
+                             "" if conf is None else round(conf, 3), rev or "", reason or "", note or "",
+                             " ".join(str(v) for v in box) if box else "", *(size or ["", ""])])
+                n += 1
+            z.writestr("manifest.csv", man.getvalue())
+            z.writestr("data.yaml", "# Pre-labels exported from the PPE monitor. Add your PPE classes after `person`.\n"
+                                    "path: .\ntrain: images\nval: images\nnames:\n  0: person\n")
+            z.writestr("README.txt", DATASET_README)
+        return n
 
     def count_today(self) -> int:
         """Violations since local midnight (cached; invalidated on add/delete/cleanup)."""

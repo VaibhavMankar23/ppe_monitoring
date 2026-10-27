@@ -3,17 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PPE Compliance</title>
+    <meta name="theme-color" content="#08080a" />
+    <title>Mahindra PPE Compliance</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
-    <!-- Company wordmark as the browser-tab identity (this is a company product). -->
-    <link rel="icon" type="image/png" href="/mai-mahindra.png" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" />
+    <link rel="icon" type="image/png" href="/mahindra-logo.png" />
     <script>
-      // Appearance switcher removed — the app is light-only. Force light before first paint
-      // so a stale saved preference or a dark-mode OS can't flip it.
-      document.documentElement.classList.remove("dark");
-      document.documentElement.style.colorScheme = "light";
+      // apply the saved theme before first paint (no light flash in dark mode)
+      try {
+        var t = localStorage.getItem("ppe-theme");
+        // dark is the default; light only when chosen
+        if (t === "light") document.documentElement.setAttribute("data-theme", "light");
+      } catch (e) {}
     </script>
   </head>
   <body>

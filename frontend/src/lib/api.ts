@@ -1,7 +1,7 @@
 import type {
   AnalyticsSummary, AuditPage, BackupInfo, CameraChanges, CameraStats, ConfigDoc, ConfigSchema, FieldError, FocusState, Heatmap, Me, Offender,
-  PpeCount, RawConfig, ReloadResult, RolesInfo, ServerFiles, SessionResponse, SourceTestResult, StreamInfo, SystemHealth,
-  TimeSeries, UserRow, Violation, ViolationPage,
+  PpeCount, RawConfig, ReloadResult, ReviewFilter, ReviewQuality, RolesInfo, ServerFiles, SessionResponse, SourceTestResult, StreamInfo, SystemHealth,
+  TimeSeries, UserRow, Verdict, Violation, ViolationPage,
 } from "../types";
 import { API_BASE, expire, freshToken, refreshSession } from "./auth";
 
@@ -138,6 +138,7 @@ export interface ViolationQuery {
   camera?: string;
   ppe?: string;
   acknowledged?: boolean;
+  review?: ReviewFilter;
   before_id?: number | null;
   limit?: number;
 }
@@ -225,10 +226,17 @@ export const api = {
     get: (id: number, include: ("original" | "crop")[] = []) =>
       call<Violation>("GET", `/api/violations/${id}${qs({ include: include.join(",") })}`),
     ack: (id: number) => call<Violation>("POST", `/api/violations/${id}/ack`),
+    /** verdict null clears the review; a false alarm needs a `reason` (ConfigSchema.review_reasons) */
+    review: (id: number, verdict: Verdict | null, reason?: string | null, note = "") =>
+      call<Violation>("POST", `/api/violations/${id}/review`, { verdict, reason: reason ?? null, note }),
     remove: (id: number) => call<{ ok: boolean }>("DELETE", `/api/violations/${id}`),
     exportCsv: (q: ViolationQuery) =>
-      download(`/api/violations/export${qs({ start: q.start, end: q.end, camera: q.camera, ppe: q.ppe, acknowledged: q.acknowledged })}`,
+      download(`/api/violations/export${qs({ start: q.start, end: q.end, camera: q.camera, ppe: q.ppe, acknowledged: q.acknowledged, review: q.review })}`,
         "violations.csv"),
+    /** YOLO-layout zip (clean frames + person pre-labels + verdicts) of the newest `limit` matches; 404 = nothing to export */
+    exportDataset: (q: ViolationQuery, limit = 500) =>
+      download(`/api/violations/dataset${qs({ start: q.start, end: q.end, camera: q.camera, ppe: q.ppe, review: q.review, limit })}`,
+        "ppe-review-dataset.zip"),
   },
   analytics: {
     summary: (q: AnalyticsQuery) => call<AnalyticsSummary>("GET", `/api/analytics/summary${qs({ ...q })}`),
@@ -237,6 +245,7 @@ export const api = {
     byCamera: (q: AnalyticsQuery) => call<CameraStats[]>("GET", `/api/analytics/by-camera${qs({ ...q })}`),
     byPpe: (q: AnalyticsQuery) => call<PpeCount[]>("GET", `/api/analytics/by-ppe-type${qs({ ...q })}`),
     heatmap: (q: AnalyticsQuery) => call<Heatmap>("GET", `/api/analytics/heatmap${qs({ ...q })}`),
+    reviewQuality: (q: AnalyticsQuery) => call<ReviewQuality>("GET", `/api/analytics/review-quality${qs({ ...q })}`),
     topOffenders: (q: AnalyticsQuery, limit = 10) => call<Offender[]>("GET", `/api/analytics/top-offenders${qs({ ...q, limit })}`),
   },
 };

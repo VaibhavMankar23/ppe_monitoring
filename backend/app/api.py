@@ -31,10 +31,10 @@ from .config import AppConfig, default_config_path, load_config
 from .config_diff import ADMIN_STREAM_KEYS, admin_denied_changes, camera_changes, diff, split_diff
 from .config_store import ConfigConflict, ConfigInvalid, ConfigStore
 from .pipeline import Monitor, StreamWorker
-from .ppe_logic import BEHAVIOR_ITEMS, PPE_ITEMS
+from .ppe_logic import BEHAVIOR_ITEMS, PPE_ITEMS, VIOLATION_ITEMS, ZONE_ITEMS
 from .security import AuthSettings, decode_access_token
 from .users_db import AuditStore, User, UserStore
-from .violations_db import ViolationFilter
+from .violations_db import REVIEW_REASONS, REVIEW_VERDICTS, ViolationFilter
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +45,12 @@ RETENTION_INTERVAL = 3600.0  # s between retention sweeps
 class StreamSettings(BaseModel):
     confidence: float | None = Field(default=None, ge=0.05, le=0.95)
     show_boxes: bool | None = None
+
+
+class ReviewBody(BaseModel):
+    verdict: str | None = None  # valid | false_alarm | null (clear the review)
+    reason: str | None = None  # required for false_alarm: a key of REVIEW_REASONS
+    note: str = Field("", max_length=280)
 
 
 class ConfigPayload(BaseModel):
@@ -343,6 +349,9 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
             "schema": AppConfig.model_json_schema(),
             "ppe_items": sorted(PPE_ITEMS),
             "behaviors": sorted(BEHAVIOR_ITEMS),
+            "zone_items": sorted(ZONE_ITEMS),
+            "zone_types": ["monitor", "ignore", "restricted"],
+            "review_reasons": [{"id": k, "label": v} for k, v in REVIEW_REASONS.items()],
             "devices": ["auto", "cpu", "cuda", "cuda:0", "cuda:1", "intel:gpu", "intel:cpu"],
             "source_types": ["file", "rtsp", "webcam", "http", "images"],
             "restart_required": ["server.host", "server.port", "server.static_dir", "server.cors_origins", "alerts.db_path"],
@@ -458,11 +467,14 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
 
     # ------------------------------------------------------------ violations
     def _filter(start: float | None, end: float | None, camera: str | None, ppe: str | None,
-                acknowledged: bool | None = None) -> ViolationFilter:
-        # `ppe` selects one violation type: a PPE item (helmet, vest, …) or a behaviour (phone_use).
-        if ppe and ppe not in PPE_ITEMS and ppe not in BEHAVIOR_ITEMS:
+                acknowledged: bool | None = None, review: str | None = None) -> ViolationFilter:
+        # `ppe` selects one violation type: a PPE item (helmet, vest, …), a behaviour (phone_use) or restricted_area.
+        if ppe and ppe not in VIOLATION_ITEMS:
             raise HTTPException(422, f"unknown violation type {ppe!r}")
-        return ViolationFilter(start=start, end=end, stream_id=camera or None, ppe=ppe or None, acknowledged=acknowledged)
+        if review and review not in (*REVIEW_VERDICTS, "unreviewed"):
+            raise HTTPException(422, f"unknown review filter {review!r}")
+        return ViolationFilter(start=start, end=end, stream_id=camera or None, ppe=ppe or None,
+                               acknowledged=acknowledged, review=review or None)
 
     v_view = [Depends(require("violations:view"))]
 
@@ -473,16 +485,18 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
         camera: str | None = None,
         ppe: str | None = None,
         acknowledged: bool | None = Query(None, description="true = only acknowledged, false = only open"),
+        review: str | None = Query(None, description="valid | false_alarm | unreviewed"),
         before_id: int | None = Query(None, description="cursor: next_before_id from the previous page"),
         limit: int = Query(50, ge=1, le=200),
     ) -> dict[str, Any]:
-        return store.list(_filter(start, end, camera, ppe, acknowledged), limit=limit, before_id=before_id)
+        return store.list(_filter(start, end, camera, ppe, acknowledged, review), limit=limit, before_id=before_id)
 
     @app.get("/api/violations/export")
     def export_violations(request: Request, start: float | None = None, end: float | None = None,
                           camera: str | None = None, ppe: str | None = None, acknowledged: bool | None = None,
+                          review: str | None = None,
                           user: User = Depends(require("violations:view", "violations:export"))) -> Response:
-        f = _filter(start, end, camera, ppe, acknowledged)
+        f = _filter(start, end, camera, ppe, acknowledged, review)
         csv_text = store.export_csv(f)
         name = f"violations-{datetime.now():%Y%m%d-%H%M%S}.csv"
         rows = max(0, len(csv_text.splitlines()) - 1)
@@ -490,6 +504,36 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
                      after={k: v for k, v in vars(f).items() if v is not None}, ip=client_ip(request))
         return Response(csv_text, media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    @app.get("/api/violations/dataset")
+    def export_dataset(request: Request, start: float | None = None, end: float | None = None,
+                       camera: str | None = None, ppe: str | None = None, review: str | None = None,
+                       limit: int = Query(500, ge=1, le=2000),
+                       user: User = Depends(require("violations:view", "violations:export"))) -> Response:
+        """Reviewed violations as a YOLO-layout zip (clean frames + person pre-labels + verdicts) for retraining."""
+        import tempfile
+
+        f = _filter(start, end, camera, ppe, None, review)
+        tmp = tempfile.SpooledTemporaryFile(max_size=64 << 20)
+        n = store.export_dataset(f, tmp, limit)
+        if not n:
+            tmp.close()
+            raise HTTPException(404, "No violations with a stored original frame match this filter.")
+        size = tmp.tell()
+        tmp.seek(0)
+        audit.record("violations.export_dataset", actor=user, target_type="violations", target=f"{n} image(s)",
+                     after={k: v for k, v in vars(f).items() if v is not None}, ip=client_ip(request))
+
+        def chunks():  # noqa: ANN202
+            try:
+                while data := tmp.read(1 << 20):
+                    yield data
+            finally:
+                tmp.close()
+
+        name = f"ppe-review-dataset-{datetime.now():%Y%m%d-%H%M%S}.zip"
+        return StreamingResponse(chunks(), media_type="application/zip", headers={
+            "Content-Disposition": f'attachment; filename="{name}"', "Content-Length": str(size), "X-Image-Count": str(n)})
 
     @app.get("/api/violations/stats", dependencies=view)
     def violation_stats() -> dict[str, Any]:
@@ -512,6 +556,24 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
         if already["acknowledged_at"] is None:
             audit.record("violation.acknowledge", actor=user, target_type="violation", target=str(vid),
                          ip=client_ip(request))
+        return v
+
+    @app.post("/api/violations/{vid}/review")
+    def review_violation(vid: int, body: ReviewBody, request: Request,
+                         user: User = Depends(require("violations:ack"))) -> dict[str, Any]:
+        if body.verdict is not None and body.verdict not in REVIEW_VERDICTS:
+            raise HTTPException(422, f"verdict must be one of {', '.join(REVIEW_VERDICTS)} or null")
+        reason = body.reason if body.verdict == "false_alarm" else None
+        if body.verdict == "false_alarm" and reason not in REVIEW_REASONS:
+            raise HTTPException(422, f"a false alarm needs a reason: {', '.join(REVIEW_REASONS)}")
+        before = store.get(vid, image=False)
+        if before is None:
+            raise HTTPException(404, "violation not found")
+        v = store.set_review(vid, body.verdict, user.username, reason, body.note)
+        if v is None:
+            raise HTTPException(404, "violation not found")
+        audit.record("violation.review", actor=user, target_type="violation", target=str(vid), ip=client_ip(request),
+                     before={"review": before["review"]}, after={"review": v["review"]})
         return v
 
     @app.delete("/api/violations/{vid}")

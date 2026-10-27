@@ -25,8 +25,8 @@ from sqlalchemy import Integer, cast, distinct, exists, func, literal, select, t
 from sqlalchemy.orm import Session
 
 from .auth import ApiError, require
-from .ppe_logic import PPE_ITEMS
-from .violations_db import ObservationRow, ViolationRow, ViolationStore
+from .ppe_logic import VIOLATION_ITEMS
+from .violations_db import REVIEW_REASONS, ObservationRow, ViolationRow, ViolationStore
 
 DAY = 86400
 HOUR = 3600
@@ -229,6 +229,34 @@ class Analytics:
                         "first_seen": first, "last_seen": last, "missing": sorted(items)})
         return out
 
+    def review_quality(self, sc: Scope) -> dict[str, Any]:
+        """How often reviewers agreed with the system. precision = valid / reviewed: the share of
+        reviewed violations that were real. It says nothing about violations the system missed."""
+        with Session(self.engine) as s:
+            total = s.scalar(_v_where(select(func.count(ViolationRow.id)), sc)) or 0
+            verdicts = dict(s.execute(_v_where(select(ViolationRow.review, func.count(ViolationRow.id)), sc)
+                                      .where(ViolationRow.review.is_not(None)).group_by(ViolationRow.review)).all())
+            reasons = s.execute(_v_where(select(ViolationRow.review_reason, func.count(ViolationRow.id)), sc)
+                                .where(ViolationRow.review == "false_alarm").group_by(ViolationRow.review_reason)
+                                .order_by(func.count(ViolationRow.id).desc())).all()
+            cams = s.execute(_v_where(select(
+                ViolationRow.stream_id, func.max(ViolationRow.stream_name),
+                func.sum(cast(ViolationRow.review == "valid", Integer)),
+                func.sum(cast(ViolationRow.review == "false_alarm", Integer))), sc)
+                .where(ViolationRow.review.is_not(None)).group_by(ViolationRow.stream_id)).all()
+        valid, false = int(verdicts.get("valid", 0)), int(verdicts.get("false_alarm", 0))
+        reviewed = valid + false
+        return {
+            "total": int(total), "reviewed": reviewed, "valid": valid, "false_alarms": false,
+            "unreviewed": int(total) - reviewed,
+            "precision": round(valid / reviewed, 4) if reviewed else None,
+            "reasons": [{"reason": r or "other", "label": REVIEW_REASONS.get(r or "other", r or "Other"), "count": int(n)}
+                        for r, n in reasons],
+            "by_camera": [{"stream_id": sid, "stream_name": name, "valid": int(v or 0), "false_alarms": int(f or 0),
+                           "precision": round((v or 0) / ((v or 0) + (f or 0)), 4) if (v or 0) + (f or 0) else None}
+                          for sid, name, v, f in cams],
+        }
+
     def summary(self, sc: Scope, names: dict[str, str] | None = None) -> dict[str, Any]:
         with Session(self.engine) as s:
             total, unacked, tracks = self._counts(s, sc)
@@ -255,6 +283,7 @@ class Analytics:
             "compliance_data_since": since,
             "most_common_missing": ppe[0] if ppe else None,
             "most_flagged_camera": cams[0] if cams else None,
+            "review": self.review_quality(sc),
         }
 
 
@@ -269,7 +298,7 @@ def _scope(start: float | None, end: float | None, camera: list[str] | None, tz:
         raise ApiError(422, f"The date range can be at most {MAX_RANGE_DAYS} days.", "invalid_range")
     cams = tuple(sorted({c for c in (camera or []) if c}))
     items = tuple(sorted({p for p in (ppe or []) if p}))
-    unknown = [p for p in items if p not in PPE_ITEMS]
+    unknown = [p for p in items if p not in VIOLATION_ITEMS]
     if unknown:
         raise ApiError(422, f"unknown PPE item(s): {', '.join(unknown)}", "invalid_ppe")
     return Scope(float(start), float(end), cams, tz, items)
@@ -323,5 +352,9 @@ def build_router() -> APIRouter:
     @r.get("/top-offenders")
     def top_offenders(request: Request, sc: Scope = Depends(params), limit: int = Query(10, ge=1, le=100)) -> list[dict[str, Any]]:
         return an(request).top_offenders(sc, limit, names(request))
+
+    @r.get("/review-quality")
+    def review_quality(request: Request, sc: Scope = Depends(params)) -> dict[str, Any]:
+        return an(request).review_quality(sc)
 
     return r

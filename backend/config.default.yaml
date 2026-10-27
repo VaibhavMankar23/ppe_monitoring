@@ -71,7 +71,7 @@ alerts:
   min_violation_frames: 6   # confirmation: consecutive non-compliant frames before a violation...
   min_violation_seconds: 1  # ...lasting at least this long (a single bad frame never counts)
   event_gap_seconds: 10     # a worker's violation event ends after this long without the violation
-  cooldown_seconds: 30      # one violation per event; a new one for the same worker needs the event
+  cooldown_seconds: 120     # one violation per event; a new one for the same worker needs the event
                             # to have ended and this long since it began (ongoing events are extended)
   snapshot_quality: 85      # JPEG quality of stored violation images
   save_original_frame: true # also keep the clean full-resolution frame as evidence
@@ -106,3 +106,8 @@ streams: []
   #     name: Gate 1
   #     source: { type: rtsp, uri: "rtsp://192.168.1.64:554/Streaming/Channels/101", username: viewer, password: "..." }
   #     required_ppe: [helmet, vest]
+  #     # Optional: where on the image the rules apply (points are fractions of the frame; draw them
+  #     # in the UI under Cameras & zones). monitor = check PPE only inside, ignore = never check
+  #     # inside, restricted = being inside is a violation. No zones = the whole frame is monitored.
+  #     zones:
+  #       - { name: Walkway, type: ignore, points: [[0.0, 0.6], [0.6, 0.6], [0.6, 0.8], [0.0, 0.8]] }

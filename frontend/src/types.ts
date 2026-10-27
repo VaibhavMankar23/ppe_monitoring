@@ -10,6 +10,18 @@ export interface Person {
   status: PersonStatus;
   items: Record<string, ItemStatus>;
   missing: string[];
+  /** name of the zone the worker stands in, if any */
+  zone?: string | null;
+  /** false = outside the camera's monitored area: shown, but PPE is not judged */
+  monitored?: boolean;
+}
+
+export type ZoneType = "monitor" | "ignore" | "restricted";
+/** A polygon on the camera image; points are fractions of the frame (0..1, origin top-left). */
+export interface Zone {
+  name: string;
+  type: ZoneType;
+  points: [number, number][];
 }
 
 export interface StreamInfo {
@@ -32,6 +44,7 @@ export interface StreamInfo {
   required_ppe: string[];
   /** configured checks the loaded model(s) can't perform (PPE with no class, phone use without a phone model) */
   unenforced?: string[];
+  zones?: Zone[];
   connected?: boolean;
   last_frame_at?: number | null; // epoch s
   last_detection_at?: number | null;
@@ -87,6 +100,8 @@ export interface Violation {
   observations?: number;
   confidence?: number | null;
   evidence_purged_at?: number | null;
+  /** a reviewer's verdict on whether the system was right; null = not reviewed yet */
+  review?: Review | null;
   // detail only
   meta?: ViolationMeta | null;
   has_original?: boolean;
@@ -94,6 +109,17 @@ export interface Violation {
   original?: string;
   crop?: string;
 }
+
+export type Verdict = "valid" | "false_alarm";
+export interface Review {
+  verdict: Verdict;
+  /** why it was a false alarm (a key of ConfigSchema.review_reasons); null for "valid" */
+  reason: string | null;
+  note: string;
+  by: string | null;
+  at: number | null; // epoch s
+}
+export type ReviewFilter = Verdict | "unreviewed";
 
 /** Provenance stored with each violation (null on violations recorded before this was kept). */
 export interface ViolationMeta {
@@ -103,6 +129,7 @@ export interface ViolationMeta {
     track_id: number; box: number[]; frame_size: number[]; box_verified_at_full_res: boolean | null;
     person_confidence: number; items: Record<string, { confidence: number | null; evidence: string }>;
     evidence_frame_score: number | null;
+    zone?: string | null;
   };
   model?: { weights?: string; sha256?: string; runtime?: string; device?: string; imgsz?: number; phone_model?: { weights?: string; sha256?: string } } | null;
   settings?: Record<string, unknown> & { config_sha256?: string; not_checked?: string[] };
@@ -175,6 +202,10 @@ export interface ConfigSchema {
   schema: any;
   ppe_items: string[];
   behaviors: string[];
+  zone_items?: string[];
+  zone_types?: ZoneType[];
+  review_reasons?: { id: string; label: string }[];
+  admin_stream_keys?: string[];
   devices: string[];
   source_types: string[];
   restart_required: string[];
@@ -282,7 +313,20 @@ export interface AnalyticsSummary {
   compliance_data_since: number | null;
   most_common_missing: PpeCount | null;
   most_flagged_camera: CameraStats | null;
+  review: ReviewQuality;
   cameras: { configured: number; enabled: number; running: number; live: number };
+}
+
+/** How often reviewers agreed with the system. precision = valid / reviewed (null until something is reviewed). */
+export interface ReviewQuality {
+  total: number;
+  reviewed: number;
+  valid: number;
+  false_alarms: number;
+  unreviewed: number;
+  precision: number | null;
+  reasons: { reason: string; label: string; count: number }[];
+  by_camera: { stream_id: string; stream_name: string; valid: number; false_alarms: number; precision: number | null }[];
 }
 
 export interface TimePoint {

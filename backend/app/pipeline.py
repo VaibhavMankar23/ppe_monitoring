@@ -34,7 +34,7 @@ from .annotate import draw, evidence_image, person_crop, violation_snapshot
 from .config import AppConfig, InferenceConfig, ModelConfig, StreamConfig
 from .detector import Detector, build_detector
 from .ppe_logic import (
-    BEHAVIOR_CLASS, Box, ComplianceSmoother, Detection, PersonCompliance, PPE_ITEMS, crop_region, detectable_items, evaluate_frame, match_person, unchecked,
+    BEHAVIOR_CLASS, Box, ComplianceSmoother, Detection, PersonCompliance, PPE_ITEMS, Zone, ZONE_ITEMS, apply_zones, drop_group_boxes, mask_unmonitored, crop_region, detectable_items, evaluate_frame, match_person, unchecked,
     merge_refined, refine_person_box,
 )
 from .sources import Frame, FrameGrabber
@@ -92,6 +92,7 @@ class StreamWorker:
         self.priority = cfg.priority
         self.required = list(cfg.required_ppe)
         self.behaviors = ["phone_use"] if cfg.detect_phone else []  # behavioural checks for this camera
+        self.zones = [Zone(z.name, z.type, tuple(z.points)) for z in cfg.zones]
         self._detectable: set[str] | None = None  # PPE items this model can actually judge (set once ready)
         self._live_behaviors: list[str] = self.behaviors  # behaviours the loaded model can actually see
         self.confidence = cfg.confidence if cfg.confidence is not None else app_cfg.model.default_confidence
@@ -267,7 +268,7 @@ class StreamWorker:
         cc = self.app_cfg.compliance
         h, w = frame.image.shape[:2]
 
-        persons = [d for d in dets if d.cls == "person"]
+        persons = drop_group_boxes([d for d in dets if d.cls == "person"])
         ppe = [d for d in dets if d.cls != "person" and d.conf >= conf]
         tracked = self.tracker.update(persons, frame.ts, high_thresh=conf)
         if self._detectable is None:  # learn what the loaded model can judge, once it's ready
@@ -292,7 +293,9 @@ class StreamWorker:
             frame_size=(w, h),
             detectable=self._detectable,
         )
+        apply_zones(people, self.zones, (w, h))
         self.smoother.apply(people)
+        mask_unmonitored(people)
         live = self.tracker.live_ids()
         self.smoother.prune(live)
         for p in people:  # every worker whose compliance could be judged counts once per session
@@ -343,6 +346,8 @@ class StreamWorker:
                     "status": p.status,
                     "items": p.items,
                     "missing": p.missing,
+                    "zone": p.zone,
+                    "monitored": p.monitored,
                 }
                 for p in people
             ],
@@ -386,6 +391,9 @@ class StreamWorker:
         None = required PPE simply not seen on the worker (strict policy), which has no detection."""
         out: dict[str, float | None] = {}
         for m in missing:
+            if m in ZONE_ITEMS:  # decided by position, not by a detection: the person box is the evidence
+                out[m] = round(p.conf, 3)
+                continue
             cls = BEHAVIOR_CLASS.get(m) or f"no_{m}"
             confs = [d.conf for d in p.ppe if d.cls == cls]
             out[m] = round(max(confs), 3) if confs else None
@@ -449,14 +457,17 @@ class StreamWorker:
                 "frame_size": [int(full.shape[1]), int(full.shape[0])],
                 "box_verified_at_full_res": confirmed,
                 "person_confidence": round(p.conf, 3),
-                "items": {m: {"confidence": c, "evidence": "detected" if c is not None else "not seen (strict policy)"}
+                "items": {m: {"confidence": c, "evidence": "inside a restricted zone" if m in ZONE_ITEMS else
+                              "detected" if c is not None else "not seen (strict policy)"}
                           for m, c in item_conf.items()},
+                "zone": p.zone,
                 "evidence_frame_score": score,
             },
             "model": getattr(det, "info", None),
             "settings": {
                 "confidence_threshold": self.confidence, "required_ppe": self.required, "behaviors": self._live_behaviors,
-                "not_checked": self.unenforced(), "missing_policy": cc.missing_policy,
+                "not_checked": self.unenforced(), "zones": [{"name": z.name, "type": z.kind} for z in self.zones],
+                "missing_policy": cc.missing_policy,
                 "min_containment": cc.min_containment, "min_person_height": cc.min_person_height,
                 "smoothing_window": cc.smoothing_window, "min_violation_frames": a.min_violation_frames,
                 "min_violation_seconds": a.min_violation_seconds, "event_gap_seconds": a.event_gap_seconds,
@@ -588,6 +599,7 @@ class StreamWorker:
             "show_boxes": self.show_boxes,
             "required_ppe": self.required,
             "unenforced": self.unenforced(),
+            "zones": [{"name": z.name, "type": z.kind, "points": [list(pt) for pt in z.points]} for z in self.zones],
             "workers": len(people),
             "compliant": sum(p["status"] == "compliant" for p in people),
             "violations": sum(p["status"] == "non_compliant" for p in people),

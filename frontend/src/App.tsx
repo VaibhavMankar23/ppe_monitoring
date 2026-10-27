@@ -1,93 +1,78 @@
 import { lazy, Suspense, useEffect, type ReactNode } from "react";
-import { Sidebar } from "./components/layout/Sidebar";
-import { PageBody } from "./components/layout/PageBody";
-import { Button, Card, EmptyState, Icon } from "./components/ui";
+import { Page, Shell } from "./components/layout/Shell";
+import { Button, Empty, Panel, Spinner } from "./components/ui";
 import { navigate, rememberNext, ROUTE_PERMISSION, useRoute, type Route } from "./lib/router";
-import { AddCameraPage } from "./pages/AddCameraPage";
 import { AuditPage } from "./pages/AuditPage";
+import { CamerasPage } from "./pages/CamerasPage";
 import { ForcedPasswordChange } from "./pages/ChangePasswordPage";
-import { ConfigPage } from "./pages/ConfigPage";
-import { DashboardPage } from "./pages/DashboardPage";
-import { BrandCard, LoginPage } from "./pages/LoginPage";
+import { LivePage } from "./pages/LivePage";
+import { LoginPage } from "./pages/LoginPage";
+import { OverviewPage } from "./pages/OverviewPage";
+import { ReviewPage } from "./pages/ReviewPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import { SystemPage } from "./pages/SystemPage";
 import { UsersPage } from "./pages/UsersPage";
-import { ViolationsPage } from "./pages/ViolationsPage";
 import { useAuth } from "./state/auth";
 import { MonitorProvider } from "./state/monitor";
 
-// Recharts is large: the Analytics page (and it) load only when opened
+// the chart library is large: Analytics (and it) load only when opened
 const AnalyticsPage = lazy(() => import("./pages/AnalyticsPage").then((m) => ({ default: m.AnalyticsPage })));
 
-const PAGES: Record<Exclude<Route, "login">, () => ReactNode> = {
-  dashboard: () => <DashboardPage />,
-  violations: () => <ViolationsPage />,
-  analytics: () => (
-    <Suspense fallback={<PageBody><Card className="p-6 text-sm text-muted">Loading analytics…</Card></PageBody>}>
+type PageRoute = Exclude<Route, "login">;
+const PAGES: Record<PageRoute, () => ReactNode> = {
+  overview: () => <OverviewPage />,
+  monitoring: () => <LivePage />,
+  incidents: () => <ReviewPage />,
+  reports: () => (
+    <Suspense fallback={<div className="flex h-64 items-center justify-center text-ink-3"><Spinner size={20} /></div>}>
       <AnalyticsPage />
     </Suspense>
   ),
-  config: () => <ConfigPage />,
-  "add-camera": () => <AddCameraPage />,
+  devices: () => <CamerasPage />,
+  settings: () => <SettingsPage />,
   system: () => <SystemPage />,
   users: () => <UsersPage />,
   audit: () => <AuditPage />,
 };
 
-function Splash() {
-  return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-3 text-sm text-muted" role="status">
-      <BrandCard className="w-20" />
-      Restoring your session…
-    </div>
-  );
-}
-
-/** Route guard: renders the page only when the signed-in role holds its permission. */
-function RequirePermission({ route }: { route: Exclude<Route, "login"> }) {
+function Guarded({ route }: { route: PageRoute }) {
   const { can } = useAuth();
-  if (!can(ROUTE_PERMISSION[route])) {
-    return (
-      <PageBody>
-        <Card>
-          <EmptyState icon={<Icon.lock size={20} />} title="You don't have access to this page"
-            message="This page is only available to Super Admins. Ask a Super Admin if you need access."
-            action={<Button onClick={() => navigate("dashboard")}>Go to the dashboard</Button>} />
-        </Card>
-      </PageBody>
-    );
-  }
-  return <>{PAGES[route]()}</>;
+  if (can(ROUTE_PERMISSION[route])) return <>{PAGES[route]()}</>;
+  return (
+    <Page title="No access">
+      <Panel>
+        <Empty icon="lock" title="Your role can't open this page"
+          action={<Button variant="primary" onClick={() => navigate("overview")}>Go to Overview</Button>}>
+          It is limited to Super Admins. Ask one of them if you need it.
+        </Empty>
+      </Panel>
+    </Page>
+  );
 }
 
 export default function App() {
   const { status, user } = useAuth();
   const route = useRoute();
 
-  // signed out on a protected URL -> remember it and show the login page at #/login
+  // signed out on a protected URL: remember it, show the sign-in page, come back after
   useEffect(() => {
     if (status === "anonymous" && route !== "login") {
       rememberNext();
       navigate("login", true);
     }
-    if (status === "authenticated" && route === "login" && user && !user.must_change_password) navigate("dashboard", true);
+    if (status === "authenticated" && route === "login" && user && !user.must_change_password) navigate("overview", true);
   }, [status, route, user]);
 
-  if (status === "loading") return <Splash />;
+  if (status === "loading") {
+    return <div className="flex min-h-dvh items-center justify-center gap-2 text-sm text-ink-3" role="status"><Spinner /> Restoring your session…</div>;
+  }
   if (!user) return <LoginPage />;
   if (user.must_change_password) return <ForcedPasswordChange />;
 
-  const page = route === "login" ? "dashboard" : route;
+  const page: PageRoute = route === "login" ? "overview" : route;
   return (
     <MonitorProvider key={user.id}>
-      <div className="min-h-screen">
-        <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded focus:bg-surface focus:px-3 focus:py-2">
-          Skip to content
-        </a>
-        <Sidebar route={page} />
-        <div className="pl-16 lg:pl-60 print:pl-0">
-          <RequirePermission route={page} />
-        </div>
-      </div>
+      <Shell route={page}><Guarded route={page} /></Shell>
     </MonitorProvider>
   );
 }

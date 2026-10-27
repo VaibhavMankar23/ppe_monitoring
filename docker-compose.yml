@@ -28,6 +28,9 @@ services:
     restart: unless-stopped
     stop_grace_period: 15s
 
+    # cap CPU so the (CPU-only) inference pipeline can't starve the host; override via .env
+    cpus: ${PPE_CPUS:-4}
+
     # --- Intel iGPU (OpenVINO GPU plugin): uncomment on a Linux host with /dev/dri ---
     # devices:
     #   - /dev/dri:/dev/dri
