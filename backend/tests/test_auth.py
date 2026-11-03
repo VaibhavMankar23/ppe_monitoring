@@ -270,7 +270,7 @@ def test_super_admin_can_do_system_things_and_it_is_audited(env, tokens):
     h = bearer(tokens["super"])
     doc = env.get("/api/config", headers=h).json()
     cfg = doc["config"]
-    cfg["alerts"]["retention_days"] = 7
+    cfg["alerts"]["retention_days"] = 3000  # long enough to keep the fixed-date fixtures through the reload
     cfg["streams"][0]["name"] = "Gate"
     assert env.put("/api/config", headers=h, json={"config": cfg, "etag": doc["etag"]}).status_code == 200
     vid = env.get("/api/violations", headers=h).json()["items"][0]["id"]
@@ -278,8 +278,8 @@ def test_super_admin_can_do_system_things_and_it_is_audited(env, tokens):
 
     log = env.get("/api/audit", headers=h).json()["items"]
     upd = next(e for e in log if e["action"] == "config.update")
-    assert upd["actor"] == "admin" and upd["before"] == {"alerts.retention_days": 30, "streams.cam1.name": "Camera 1"}
-    assert upd["after"] == {"alerts.retention_days": 7, "streams.cam1.name": "Gate"}
+    assert upd["actor"] == "admin" and upd["before"] == {"alerts.retention_days": 3650, "streams.cam1.name": "Camera 1"}
+    assert upd["after"] == {"alerts.retention_days": 3000, "streams.cam1.name": "Gate"}
     actions = [e["action"] for e in log]
     for a in ("violation.delete", "user.create", "auth.password_change", "auth.login", "user.seed"):
         assert a in actions, a

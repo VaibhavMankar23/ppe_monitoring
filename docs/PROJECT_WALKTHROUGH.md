@@ -487,7 +487,7 @@ uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, ...)   # run.py –
 - *uvicorn*: the program that actually listens on port 8000 and passes requests to FastAPI.
 - Ctrl+C makes uvicorn run FastAPI's shutdown code (`api.py`), which stops every thread cleanly.
 
-`start.bat` (repo root) just runs `run.py` with the right Python.
+In Docker the container's start command runs `run.py` (see 7.2).
 
 ### 3.2 `sources.py`: the video source layer
 
@@ -556,21 +556,17 @@ source: { type: webcam, uri: "0" }                                        # firs
 | `YoloDetector` | 129 | the real implementation |
 | `YoloDetector.predict()` | 165 | run the model on a list of images |
 
-**Model used:** `models/safesight/best.pt`. It's a YOLOv8-small model fine-tuned by its author on ~13,000 construction-site images for 60 epochs (training rounds); mAP50 ≈ 0.76, per `models/safesight/README.md`. It came from Hugging Face and was already in your `models/` folder along with 6 others.
-
-**Why this model?** Of the 7 checkpoints in `models/`, it's the only one with all 7 PPE items **and** a "no-X" class for each:
+**Model used:** `models/safesight/best.pt`, a YOLO11s model with 10 classes (details in 5.2). It detects helmet, vest and mask, each with a "no-X" class:
 
 | Raw class (model) | Our name | Used? |
 |---|---|---|
-| Worker | person | ✓ |
-| Hard_hat / No-Helmet | helmet / no_helmet | ✓ |
-| Vest / No-Vest | vest / no_vest | ✓ |
-| Glove / No-Glove | gloves / no_gloves | ✓ |
-| Glass / No-Glass | goggles / no_goggles | ✓ |
-| Boots / No-Boots | boots / no_boots | ✓ |
-| Mask / No-Mask | mask / no_mask | ✓ |
-| Ear-Protection / No-Ear-Protection | ear_protection / … | ✓ |
-| Circular_Saw, Fire_Extinguisher, Fire_prevention_Net, Welding_Equipment | – | ignored (not in `class_map`, so filtered out: `classes=self._keep`, `detector.py`) |
+| Person | person | ✓ |
+| Hardhat / NO-Hardhat | helmet / no_helmet | ✓ |
+| Safety Vest / NO-Safety Vest | vest / no_vest | ✓ |
+| Mask / NO-Mask | mask / no_mask | ✓ |
+| Safety Cone, Machinery, Vehicle | – | ignored (not in `class_map`, so filtered out: `classes=self._keep`, `detector.py`) |
+
+Gloves, goggles, boots and ear protection are **not** detected by this model; if selected as required PPE they show as "not checked".
 
 **GPU/CPU handling** (`select_backend()`, lines 101-126). The order of preference for `device: auto`:
 
@@ -989,17 +985,19 @@ In plain words:
 4. Many overlapping guesses for the same object are merged by **NMS** (below).
 5. We get a list of boxes, each with a class and a confidence.
 
-*Training*: showing the network labelled images and nudging its weights to reduce mistakes. *Fine-tuning*: training further, starting from an existing model, on your own specialised images. We didn't train anything; we use SafeSight's fine-tuned weights.
+*Training*: showing the network labelled images and nudging its weights to reduce mistakes. *Fine-tuning*: training further, starting from an existing model, on your own specialised images. The deployed weights were fine-tuned by their author from Ultralytics' COCO-pretrained `yolo11s.pt`; nothing has been trained on plant footage yet.
 
 ### 5.2 The weights we use
 
-`models/safesight/best.pt`, 22 MB:
+`models/safesight/best.pt`, 18 MB (training record stored in the checkpoint):
 
-- **Architecture:** YOLOv8s ("small"), trained with Ultralytics (`models/safesight/args.yaml`: `model: yolov8s.pt`, `epochs: 60`, `imgsz: 640`).
-- **Data:** ~13,000 images merged from several Roboflow datasets and a GitHub dataset.
-- **Quality (author's numbers):** mAP50 ≈ 0.76, precision ≈ 0.81, recall ≈ 0.72.
-- **Origin:** a public Hugging Face model repo (the "SafeSight" project, Apache-2.0 licence), already downloaded into `models/safesight/`.
-- **Our derived copies:** `best_480_openvino_model/` and `best_640_openvino_model/`, automatic OpenVINO conversions.
+- **Architecture:** YOLO11s ("small"), Ultralytics 8.4.143, fine-tuned from `yolo11s.pt` (COCO-pretrained).
+- **Training:** finished 8 Sep 2026 on Kaggle (2 GPUs), 150 epochs, image size 640, batch 16, run `safesight_yolo11s_2gpu-2`.
+- **Classes (10):** Hardhat, Mask, NO-Hardhat, NO-Mask, NO-Safety Vest, Person, Safety Cone, Safety Vest, Machinery, Vehicle. This matches the public Roboflow "Construction Site Safety" dataset (likely source; the checkpoint does not name it).
+- **Quality (author's validation set, not plant footage):** precision 0.91, recall 0.81, mAP50 0.86, mAP50-95 0.58.
+- **Licence:** Ultralytics YOLO is AGPL-3.0 (see `docs/SECURITY.md` go-live checklist).
+- **Derived copies:** `best_480_openvino_model/` (OpenVINO, Intel CPU/iGPU) or a TensorRT `.engine` (NVIDIA), built automatically on first start.
+- **Person detector:** `models/coco/yolov8n.pt` (COCO), run on 2x2 tiles to find small and distant workers.
 
 ### 5.3 Key terms
 
@@ -1113,13 +1111,13 @@ On this laptop, **everything shares one 4-core CPU and one small iGPU**:
 
 ## 7. Run, test, deploy
 
-### 7.1 Run locally (Windows, as set up now)
+### 7.1 Run locally
 
-```powershell
-D:\ppe_pretrained\start.bat
+```bash
+cd backend && python run.py      # with the Python environment from backend/requirements.txt
 ```
 
-`start.bat` runs `backend_venv311\Scripts\python.exe run.py` from `backend\`. Wait for `ready: http://0.0.0.0:8000`, then open **http://localhost:8000**. Ctrl+C stops it.
+Wait for `ready: http://0.0.0.0:8000`, then open **http://localhost:8000**. Ctrl+C stops it.
 
 What happens at startup:
 
@@ -1131,8 +1129,8 @@ What happens at startup:
 
 **Frontend development** (live reload while editing React code):
 
-```powershell
-cd D:\ppe_pretrained\frontend
+```bash
+cd frontend
 npm install          # once: downloads packages into node_modules/
 npm run dev          # dev server on http://localhost:5173, proxies /api and /ws to :8000
 npm run build        # type-check + produce frontend/dist (what :8000 serves)
@@ -1143,9 +1141,9 @@ npm run build        # type-check + produce frontend/dist (what :8000 serves)
 ```bash
 cd backend
 python -m venv .venv
-.venv/Scripts/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-.venv/Scripts/pip install -r requirements.txt
-.venv/Scripts/python run.py
+.venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python run.py
 ```
 
 ### 7.2 Docker
@@ -1164,14 +1162,14 @@ docker compose up --build
   point the app at those volumes.
 - The local DB and backups are in `.dockerignore`, so they're never baked into the image.
 
-⚠️ Docker still **hasn't been tested** here, because Docker isn't installed on this machine.
+For the production install (GPU, HTTPS, backups) see [`SETUP.md`](../SETUP.md).
 
 ### 7.3 Tests
 
-```powershell
-cd D:\ppe_pretrained\backend
-..\backend_venv311\Scripts\python.exe -m pytest -q        # 84 passed
-..\backend_venv311\Scripts\python.exe scripts\headless_check.py --seconds 30   # in-memory DB unless --persist
+```bash
+cd backend
+python -m pytest -q                                       # 307 passed
+python scripts/headless_check.py --seconds 30   # in-memory DB unless --persist
 ```
 
 | File | Tests | Checks |
@@ -1197,7 +1195,7 @@ The tests use a `FakeDetector` (`tests/helpers.py`), so they never load a model 
 | Startup error `unknown PPE item(s)` | typo in `required_ppe` | use one of: helmet, vest, gloves, goggles, boots, mask, ear_protection |
 | Many `[hevc @ …]` log lines | FFmpeg skipping the NVR's private headers in `.cpv` | harmless |
 | Flood of `'half' is deprecated` warnings | an old version of `detector.py` | fixed; restart the app |
-| UI says **Backend offline** | backend not running, or the dev server's proxy points to the wrong port | start `start.bat`; check `VITE_BACKEND_URL` |
+| UI says **Backend offline** | backend not running, or the dev server's proxy points to the wrong port | start the backend (`python run.py` or `docker compose up -d`); check `VITE_BACKEND_URL` |
 | Very low FPS | two copies of the app running, or other heavy programs | run one copy; close other apps; view from another PC |
 | Playback too fast/slow | wrong `fps:` for raw streams | `.cpv` = 20 |
 | `npm run build` fails with a TypeScript error | type mistake in `.tsx` | read the file/line in the error |

@@ -4,6 +4,9 @@ services:
       context: .
       args:
         TORCH_INDEX: ${TORCH_INDEX:-cpu}
+        # the container runs as this user: run `sudo chown -R <uid>:<gid> config data videos models` once
+        APP_UID: ${PPE_UID:-1000}
+        APP_GID: ${PPE_GID:-1000}
     image: ppe-monitor:latest
     ports:
       - "${PPE_PORT:-8000}:8000"
@@ -17,6 +20,7 @@ services:
       PPE_DB_PATH: /app/data/violations.db
       # signs the access tokens; must be set in .env (compose refuses to start without it)
       PPE_JWT_SECRET: ${PPE_JWT_SECRET:?set PPE_JWT_SECRET in .env - see .env.example}
+      # set to true once the dashboard is served over HTTPS (reverse proxy), so the sign-in cookie never travels in clear
       PPE_COOKIE_SECURE: ${PPE_COOKIE_SECURE:-auto}
       # plant time zone: "violations today" and the CSV local_time column use it (e.g. Asia/Kolkata)
       TZ: ${TZ:-UTC}

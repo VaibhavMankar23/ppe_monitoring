@@ -12,8 +12,9 @@ import { cx } from "../ui";
  * must have a definite size (e.g. absolute inset-0, or an aspect ratio) and the picture is
  * contained in it without distortion.
  */
-export function CameraVideo({ streamId, fps = 8, aspect = 16 / 9, className, children, onFrame, fit }:
-  { streamId: string; fps?: number; aspect?: number; className?: string; children?: React.ReactNode; onFrame?: (jpeg: Blob) => void; fit?: boolean }) {
+export function CameraVideo({ streamId, fps = 8, aspect = 16 / 9, className, children, onFrame, fit, width = 0 }:
+  { streamId: string; fps?: number; aspect?: number; className?: string; children?: React.ReactNode; onFrame?: (jpeg: Blob) => void; fit?: boolean;
+    /** largest picture width needed in device pixels (a small tile); 0 = full size */ width?: number }) {
   const { subscribeFrames } = useMonitor();
   const img = useRef<HTMLImageElement>(null);
   const [has, setHas] = useState(false);
@@ -30,12 +31,12 @@ export function CameraVideo({ streamId, fps = 8, aspect = 16 / 9, className, chi
       url = next;
       setHas(true);
       cb.current?.(blob);
-    });
+    }, width);
     return () => {
       off();
       if (url) URL.revokeObjectURL(url);
     };
-  }, [streamId, fps, subscribeFrames]);
+  }, [streamId, fps, width, subscribeFrames]);
 
   return (
     <div className={cx("relative flex items-center justify-center overflow-hidden bg-stage", className)} style={fit ? { containerType: "size" } : undefined}>

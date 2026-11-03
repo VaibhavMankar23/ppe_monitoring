@@ -32,7 +32,11 @@ def main() -> None:
     cfg = load_config(cfg_path)
     app = create_app(cfg, config_path=cfg_path)
     # uvicorn handles SIGINT/SIGTERM and runs the lifespan shutdown -> threads are joined cleanly.
-    uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level=args.log_level.lower(), access_log=False)
+    # Behind a TLS reverse proxy the client address comes from X-Forwarded-For, but only from proxies
+    # listed here: otherwise sign-in lockouts and the audit trail would see every user as the proxy.
+    trusted = os.environ.get("PPE_TRUSTED_PROXIES", "127.0.0.1")
+    uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level=args.log_level.lower(), access_log=False,
+                proxy_headers=True, forwarded_allow_ips=trusted)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,11 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Page } from "../components/layout/Shell";
-import { FALLBACK_REASONS, dialogOpen, isTyping, matchesReview, type Reason, type ReviewPatch } from "../components/review/shared";
+import { createPortal } from "react-dom";
+import { FALLBACK_REASONS, dialogOpen, focusOnTop, isTyping, matchesReview, type Reason, type ReviewPatch } from "../components/review/shared";
 import { ViolationDetail } from "../components/review/ViolationDetail";
 import { ListSkeleton, ViolationList } from "../components/review/ViolationList";
 import { TableSkeleton, ViolationTable } from "../components/review/ViolationTable";
-import { Button, cx, Dialog, Drawer, Empty, Field, Input, Notice, Select, Tabs, useToast } from "../components/ui";
+import { Button, cx, Dialog, Drawer, Empty, Field, Icon, Input, Kbd, Notice, Select, Tabs, useOverlay, useToast } from "../components/ui";
 import { api, type ViolationQuery } from "../lib/api";
 import { dateRangeToEpoch, fmtDateTime, fmtInt, violationLabel } from "../lib/format";
 import { hashParams } from "../lib/router";
@@ -92,6 +93,39 @@ function useFillHeight(enabled: boolean) {
  * Review queue. The monitor context changes 4x/s, so this thin wrapper is the only part that
  * subscribes to it; the page itself is memoised and gets the camera list only when it really changes.
  */
+/**
+ * Full-screen review: the evidence fills the screen and the verdict sits beside it. J / K move through
+ * the queue without leaving it, V / F judge, Z or Esc go back. The page behind does not scroll.
+ */
+function FocusView({ position, total, onClose, onStep, children }:
+  { position: number; total: number; onClose: () => void; onStep: (d: 1 | -1) => void; children: ReactNode }) {
+  const ref = useOverlay(true, onClose);
+  const btn = "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-semibold text-stage-ink hover:bg-white/10 disabled:opacity-40";
+  return createPortal(
+    <div ref={ref} role="dialog" aria-modal="true" aria-label="Full-screen review" data-review-focus tabIndex={-1}
+      className="fixed inset-0 z-[60] flex flex-col bg-stage outline-none">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-stage-line px-3 py-1.5 text-stage-ink sm:px-4">
+        <span className="text-[13px] font-semibold">Full-screen review</span>
+        {position > 0 && <span className="num text-[13px] text-stage-ink-2">{fmtInt(position)} of {fmtInt(total)}</span>}
+        <span className="ml-auto flex items-center gap-1">
+          <button type="button" className={btn} onClick={() => onStep(-1)} disabled={position <= 1} aria-label="Previous (K)">
+            <Icon name="chevronLeft" size={16} /><span className="hidden sm:inline">Previous</span> <span className="hidden lg:inline"><Kbd>K</Kbd></span>
+          </button>
+          <button type="button" className={btn} onClick={() => onStep(1)} disabled={position === 0 || position >= total} aria-label="Next (J)">
+            <span className="hidden sm:inline">Next</span> <span className="hidden lg:inline"><Kbd>J</Kbd></span><Icon name="chevronRight" size={16} />
+          </button>
+          <span aria-hidden="true" className="mx-1 h-5 w-px bg-stage-line" />
+          <button type="button" className={btn} onClick={onClose} aria-label="Close full screen (Esc)">
+            <Icon name="x" size={16} />Close <span className="hidden lg:inline"><Kbd>Esc</Kbd></span>
+          </button>
+        </span>
+      </div>
+      <div className="min-h-0 flex-1">{children}</div>
+    </div>,
+    document.body,
+  );
+}
+
 export function ReviewPage() {
   const { streams, onViolation, onViolationUpdate } = useMonitor();
   const signature = streams.map((s) => `${s.id}\u0000${s.name}`).join("\u0001");
@@ -152,8 +186,9 @@ const ReviewQueue = memo(function ReviewQueue({ cameras, onViolation, onViolatio
   const listRef = useRef<HTMLDivElement>(null);
   const sentinel = useRef<HTMLDivElement>(null);
   // latest values for callbacks that must stay stable (rows are memoised on them)
-  const live = useRef({ items, selectedId, cursor, query, isDesktop, drawerOpen });
-  live.current = { items, selectedId, cursor, query, isDesktop, drawerOpen };
+  const [focus, setFocus] = useState(false); // full-screen review
+  const live = useRef({ items, selectedId, cursor, query, isDesktop, drawerOpen, focus });
+  live.current = { items, selectedId, cursor, query, isDesktop, drawerOpen, focus };
 
   useEffect(() => {
     let on = true;
@@ -319,10 +354,11 @@ const ReviewQueue = memo(function ReviewQueue({ cameras, onViolation, onViolatio
     const h = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target)) return;
       const s = live.current;
-      if (dialogOpen(!s.isDesktop && s.drawerOpen ? 1 : 0)) return;
+      if (s.focus ? !focusOnTop() : dialogOpen(!s.isDesktop && s.drawerOpen ? 1 : 0)) return;
       const k = e.key.toLowerCase();
-      if (k === "j" || e.key === "ArrowDown") { e.preventDefault(); step(1); }
-      else if (k === "k" || e.key === "ArrowUp") { e.preventDefault(); step(-1); }
+      if (k === "j" || e.key === "ArrowDown" || (s.focus && e.key === "ArrowRight")) { e.preventDefault(); step(1); }
+      else if (k === "k" || e.key === "ArrowUp" || (s.focus && e.key === "ArrowLeft")) { e.preventDefault(); step(-1); }
+      else if (k === "z" && s.selectedId !== null) { e.preventDefault(); setFocus(!s.focus); }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
@@ -397,7 +433,7 @@ const ReviewQueue = memo(function ReviewQueue({ cameras, onViolation, onViolatio
         </span>
         {canExport && <>
           <Button icon="download" loading={exportingCsv} onClick={() => void exportCsv()}>Export CSV</Button>
-          <Button icon="dataset" onClick={() => setDatasetOpen(true)}>Export dataset</Button>
+          {can("violations:export_images") && <Button icon="dataset" onClick={() => setDatasetOpen(true)}>Export dataset</Button>}
         </>}
       </div>
     </>
@@ -442,8 +478,9 @@ const ReviewQueue = memo(function ReviewQueue({ cameras, onViolation, onViolatio
 
   const detail = selectedId !== null && (
     <ViolationDetail key={selectedId} id={selectedId} item={selectedItem} reasons={reasons} canReview={canReview} canDelete={canDelete}
-      inDrawer={!isDesktop} onReviewed={handleReviewed} onDeleted={handleDeleted} />
+      inDrawer={!isDesktop} onFullscreen={() => setFocus(true)} onReviewed={handleReviewed} onDeleted={handleDeleted} />
   );
+  const position = selectedId === null ? 0 : items.findIndex((x) => x.id === selectedId) + 1;
 
   return (
     <Page title="Review" wide
@@ -477,6 +514,13 @@ const ReviewQueue = memo(function ReviewQueue({ cameras, onViolation, onViolatio
           subtitle={selectedItem ? <><span className="font-mono">#{selectedItem.id}</span> · {selectedItem.stream_name} · <span className="num">{fmtDateTime(selectedItem.timestamp)}</span></> : undefined}>
           {detail}
         </Drawer>
+      )}
+
+      {focus && selectedId !== null && (
+        <FocusView position={position} total={counts[filters.status] ?? items.length} onClose={() => setFocus(false)} onStep={step}>
+          <ViolationDetail key={selectedId} id={selectedId} item={selectedItem} reasons={reasons} canReview={canReview} canDelete={canDelete}
+            fullscreen onReviewed={handleReviewed} onDeleted={handleDeleted} />
+        </FocusView>
       )}
 
       <Dialog open={datasetOpen} onClose={() => !datasetBusy && setDatasetOpen(false)} title="Export retraining dataset"

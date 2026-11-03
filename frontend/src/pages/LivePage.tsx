@@ -1,13 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CameraDrawer } from "../components/live/CameraDrawer";
 import { CameraTile } from "../components/live/CameraTile";
-import { byAttention, FleetBoard, FleetLegend } from "../components/live/FleetBoard";
+import { FleetBoard, FleetLegend } from "../components/live/FleetBoard";
 import { Page } from "../components/layout/Shell";
-import { Button, cx, Empty, Icon, Notice, Panel, Segmented, Switch, Tag } from "../components/ui";
-import { api, jpegDataUrl } from "../lib/api";
-import { fmtAgo, fmtTime, violationLabel } from "../lib/format";
-import type { Violation } from "../types";
-import { hashParams, href, navigateWith } from "../lib/router";
+import { Button, cx, Empty, Icon, Notice, Panel, Segmented, Switch } from "../components/ui";
+import { hashParams, navigateWith } from "../lib/router";
 import { useAuth } from "../state/auth";
 import { useMonitor } from "../state/monitor";
 
@@ -20,6 +17,10 @@ const GRID: Record<Layout, string> = {
 const PER_PAGE: Record<Layout, number> = { "2": 4, "3": 9, "4": 16 };
 // fewer pixels per tile -> fewer frames: a 4x4 wall costs about what a 2x2 one does
 const FPS: Record<Layout, number> = { "2": 8, "3": 5, "4": 3 };
+// picture width a tile needs (CSS px, times the screen's pixel ratio): the server sends a JPEG that size
+// instead of the full 960 px frame, about 2-4x less data per tile (0 = full size)
+const TILE_W: Record<Layout, number> = { "2": 0, "3": 640, "4": 480 };
+const tileWidth = (l: Layout) => (TILE_W[l] ? Math.round(TILE_W[l] * Math.min(2, window.devicePixelRatio || 1)) : 0);
 const CYCLE_MS = 20_000;
 type View = "board" | "wall";
 const pref = <T extends string>(key: string, fallback: T): T => {
@@ -40,55 +41,6 @@ function GridIcon({ n }: { n: number }) {
 }
 
 type Filter = "all" | "violating" | "offline";
-
-/** Incidents as they are raised, newest on top (the Live workspace's right rail). */
-function EventRail() {
-  const { can } = useAuth();
-  const { onViolation, onViolationUpdate } = useMonitor();
-  const [items, setItems] = useState<Violation[] | null>(null);
-  const [fresh, setFresh] = useState<number | null>(null);
-  const [, tick] = useState(0);
-  const allowed = can("violations:view");
-  useEffect(() => {
-    if (!allowed) return;
-    let alive = true;
-    api.violations.list({ limit: 12 }).then((p) => alive && setItems(p.items)).catch(() => alive && setItems([]));
-    const offNew = onViolation((v) => { setItems((xs) => [v, ...(xs ?? []).filter((x) => x.id !== v.id)].slice(0, 12)); setFresh(v.id); });
-    const offUpd = onViolationUpdate((u) => setItems((xs) => xs?.map((x) => (x.id === u.id ? { ...x, state: u.state, last_seen: u.last_seen, missing: u.missing ?? x.missing } : x)) ?? xs));
-    const t = window.setInterval(() => tick((n) => n + 1), 10_000);
-    return () => { alive = false; offNew(); offUpd(); window.clearInterval(t); };
-  }, [allowed, onViolation, onViolationUpdate]);
-  if (!allowed) return null;
-  return (
-    <Panel className="flex flex-col xl:sticky xl:top-[calc(var(--topbar-h)+12px)] xl:max-h-[calc(100dvh-var(--topbar-h)-36px)]">
-      <div className="flex items-center gap-2 border-b border-line px-5 py-4">
-        <span className="size-2 rounded-full bg-bad live-ping" />
-        <h2 className="text-[15px] font-bold tracking-tight">Live events</h2>
-        <a href={href("incidents")} className="ml-auto text-[13px] font-semibold text-accent no-underline hover:underline">Review all</a>
-      </div>
-      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-2">
-        {items === null ? <div className="space-y-2 p-2">{[0, 1, 2, 3].map((i) => <div key={i} className="skeleton h-14" />)}</div>
-          : items.length === 0 ? <Empty icon="shield" title="No incidents yet">New ones appear here the moment they are confirmed.</Empty>
-          : items.map((v) => {
-            const ongoing = v.state === "ongoing";
-            return (
-              <button key={v.id} type="button" onClick={() => navigateWith("incidents", { id: v.id })}
-                className={cx("flex w-full items-center gap-3 rounded-xl p-2 text-left hover:bg-sunken", v.id === fresh && "animate-[flash_2.6s]")}>
-                <img src={jpegDataUrl(v.thumbnail)} alt="" className="size-12 shrink-0 rounded-[10px] bg-stage object-cover" />
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2">
-                    <span className="truncate text-[13.5px] font-semibold">{v.missing.map(violationLabel).join(", ")}</span>
-                    {ongoing && <Tag tone="bad">Now</Tag>}
-                  </span>
-                  <span className="block truncate text-[12.5px] text-ink-3">{v.stream_name} · <span className="font-mono">{fmtTime(v.timestamp)}</span> · {fmtAgo(v.timestamp)}</span>
-                </span>
-              </button>
-            );
-          })}
-      </div>
-    </Panel>
-  );
-}
 
 export function LivePage() {
   const { connected, streams, info } = useMonitor();
@@ -115,8 +67,7 @@ export function LivePage() {
     const t = query.trim().toLowerCase();
     return streams
       .filter((s) => (filter === "violating" ? s.violations > 0 : filter === "offline" ? s.running && s.status !== "live" : true))
-      .filter((s) => !t || s.name.toLowerCase().includes(t) || s.id.toLowerCase().includes(t))
-      .sort(byAttention);
+      .filter((s) => !t || s.name.toLowerCase().includes(t) || s.id.toLowerCase().includes(t)); // configured order, never by status
   }, [streams, filter, query]);
   const per = PER_PAGE[layout];
   const pages = Math.max(1, Math.ceil(matching.length / per));
@@ -189,7 +140,7 @@ export function LivePage() {
           </Empty>
         </Panel>
       ) : (
-        <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div>
           <div className="min-w-0">
             {matching.length === 0 ? (
               <Panel>
@@ -205,7 +156,7 @@ export function LivePage() {
             ) : (
               <>
                 <div className={cx("grid gap-3.5", GRID[layout])}>
-                  {wall.map((s) => <CameraTile key={s.id} s={s} onOpen={open} showZones={zones} fps={FPS[layout]} card />)}
+                  {wall.map((s) => <CameraTile key={s.id} s={s} onOpen={open} showZones={zones} fps={FPS[layout]} width={tileWidth(layout)} card />)}
                 </div>
                 {pages > 1 && (
                   <div className="mt-4 flex items-center justify-center gap-1.5" aria-label="Pages">
@@ -218,7 +169,6 @@ export function LivePage() {
               </>
             )}
           </div>
-          <EventRail />
         </div>
       )}
 

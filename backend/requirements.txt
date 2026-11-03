@@ -3,7 +3,7 @@
 # For CUDA, follow https://pytorch.org/get-started/locally/
 torch>=2.2
 torchvision>=0.17
-ultralytics>=8.3,<9
+ultralytics>=8.3,<9,!=8.3.41,!=8.3.42,!=8.3.45,!=8.3.46  # those four releases carried a crypto-miner (Dec 2024 supply-chain attack)
 opencv-python-headless>=4.9
 numpy>=1.26
 scipy>=1.11

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Page } from "../components/layout/Shell";
-import { CameraTile } from "../components/live/CameraTile";
-import { byAttention, FleetBoard, FleetLegend } from "../components/live/FleetBoard";
+import { FleetBoard, FleetLegend } from "../components/live/FleetBoard";
 import { isProblem } from "../components/live/status";
 import { Button, cx, Empty, Icon, Notice, Panel, Segmented, Skeleton, Tag, type IconName } from "../components/ui";
 import { api, jpegDataUrl, type AnalyticsQuery } from "../lib/api";
@@ -9,7 +8,7 @@ import { fmtAgo, fmtInt, fmtPct, violationLabel } from "../lib/format";
 import { href, navigateWith } from "../lib/router";
 import { useAuth } from "../state/auth";
 import { useMonitor } from "../state/monitor";
-import type { AnalyticsSummary, CameraStats, Heatmap, PpeCount, TimePoint, Violation } from "../types";
+import type { AnalyticsSummary, CameraStats, Heatmap, PpeCount, StreamInfo, TimePoint, Violation } from "../types";
 
 const DAY = 86_400;
 const startOfDay = (d = new Date()) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000;
@@ -234,6 +233,58 @@ const rateColor = (r: number, target: number) => (r < target - 0.025 ? "var(--co
 
 // ------------------------------------------------------------------ page
 
+/**
+ * Where a supervisor has to go now: one compact row per unsafe camera (camera, how many people,
+ * what they're missing). The list lives in a fixed-height box that scrolls on its own, so cameras
+ * turning unsafe or safe never push the rest of the page up and down. With nobody unsafe the same box
+ * shows a calm all-clear state. No video here: the home page is a decision screen.
+ */
+function ActNow({ unsafe, onOpen, online, lastAt }: { unsafe: StreamInfo[]; onOpen: (id: string) => void; online: number; lastAt: number | null }) {
+  return (
+    <section aria-label="Act now" className="relative flex min-h-0 flex-col rounded-2xl border border-line bg-surface/70 p-3 backdrop-blur-sm lg:h-full">
+      <div className="flex items-baseline justify-between gap-3 px-1.5 pb-2">
+        <h3 className="text-[12px] font-bold tracking-[0.1em] text-ink-3 uppercase">Act now{unsafe.length > 0 && <span className="num ml-1.5 text-bad">{unsafe.length}</span>}</h3>
+        <a href={href("monitoring")} className="text-[13px] font-semibold text-accent no-underline hover:underline">Open Live<Icon name="arrowRight" size={13} className="ml-1 inline" /></a>
+      </div>
+      {unsafe.length === 0 ? (
+        <div className="grid flex-1 place-items-center rounded-xl border border-dashed border-ok-line bg-ok-soft/50 px-4 py-6 text-center">
+          <div>
+            <Icon name="check" size={22} className="mx-auto text-ok" />
+            <p className="mt-2 text-[14px] font-semibold text-ink">Nobody is unsafe right now</p>
+            <p className="mt-0.5 text-[12.5px] text-ink-3">
+              {online} camera{online === 1 ? "" : "s"} watching{lastAt ? <> · last incident {fmtAgo(lastAt, Date.now() / 1000)}</> : null}
+            </p>
+          </div>
+        </div>
+      ) : (
+        <ul className="scroll-thin -mx-1 max-h-[260px] min-h-0 flex-1 space-y-1.5 overflow-y-auto px-1 lg:max-h-none">
+          {unsafe.map((s) => {
+            const flagged = s.people.filter((p) => p.status === "non_compliant");
+            const missing = [...new Set(flagged.flatMap((p) => p.missing))];
+            const zones = [...new Set(flagged.map((p) => p.zone).filter(Boolean))] as string[];
+            return (
+              <li key={s.id}>
+                <button type="button" onClick={() => onOpen(s.id)}
+                  className="group grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-bad-line bg-bad-soft px-3 py-2.5 text-left transition-colors hover:border-bad">
+                  <span className="num grid size-8 place-items-center rounded-lg bg-bad text-[13px] font-bold text-white" title={`${s.violations} unsafe`}>{s.violations}</span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-[14px] font-semibold text-ink">{s.name}</span>
+                    <span className="block truncate text-[12.5px] text-ink-2">
+                      {missing.length ? missing.map(violationLabel).join(" · ") : "Unsafe"}
+                      <span className="text-ink-3"> · {s.violations} of {s.workers} in view{zones.length > 0 && ` · ${zones.join(", ")}`}</span>
+                    </span>
+                  </span>
+                  <Icon name="arrowRight" size={16} className="text-bad transition-transform group-hover:translate-x-0.5" />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export function OverviewPage() {
   const { can, user } = useAuth();
   const { connected, streams, info } = useMonitor();
@@ -253,7 +304,7 @@ export function OverviewPage() {
     bad: streams.reduce((n, s) => n + s.violations, 0),
     online: streams.filter((s) => s.status === "live").length,
     problems: streams.filter(isProblem),
-    unsafe: streams.filter((s) => s.violations > 0).sort(byAttention),
+    unsafe: streams.filter((s) => s.violations > 0), // configured camera order
   }), [streams]);
 
   const target = data?.week.compliance_target ?? 0.95;
@@ -263,7 +314,9 @@ export function OverviewPage() {
   const reviewedShare = review && review.total ? review.reviewed / review.total : 0;
   const avgDay = data?.week.avg_violations_per_day ?? null;
   const today = info?.violations_today ?? 0;
-  const camRows = (data?.camsWeek ?? []).filter((c) => c.compliance_rate !== null).sort((a, b) => a.compliance_rate! - b.compliance_rate!);
+  const order = new Map(streams.map((s, i) => [s.id, i]));
+  const camRows = (data?.camsWeek ?? []).filter((c) => c.compliance_rate !== null)
+    .sort((a, b) => (order.get(a.stream_id) ?? 1e6) - (order.get(b.stream_id) ?? 1e6)); // camera order
   const lo = Math.min(0.85, ...camRows.map((c) => c.compliance_rate! - 0.02));
   const pos = (r: number) => `${Math.max(2, ((r - lo) / (1 - lo)) * 100)}%`;
   const ppeRows = (data?.ppe ?? []).filter((p) => p.count > 0).sort((a, b) => b.count - a.count).slice(0, 6);
@@ -289,33 +342,25 @@ export function OverviewPage() {
       {error && <Notice tone="bad" title="Couldn't load the figures" className="mb-5">{error}</Notice>}
 
       {/* ---- status hero ---- */}
-      <Panel className={cx("relative mb-5 overflow-hidden p-6 sm:p-7", live.unsafe.length > 0 && "grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]")}>
+      {/* fixed height on desktop: unsafe cameras coming and going never move the rest of the page */}
+      <Panel className="relative mb-5 grid gap-5 overflow-hidden p-5 sm:p-6 lg:h-[288px] lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
         <span aria-hidden="true" className={cx("pointer-events-none absolute -top-24 -left-24 size-72 rounded-full blur-3xl",
           status.tone === "ok" ? "bg-ok/20" : status.tone === "warn" ? "bg-warn/20" : "bg-bad/25")} />
         <div className="relative flex flex-col justify-center">
-          <div className={cx("mb-4 inline-flex w-fit items-center gap-2 rounded-full px-3 py-1 text-[12px] font-bold tracking-[0.08em] uppercase",
+          <div className={cx("mb-3 inline-flex w-fit items-center gap-2 rounded-full px-3 py-1 text-[12px] font-bold tracking-[0.08em] uppercase",
             status.tone === "ok" ? "bg-ok-soft text-ok" : status.tone === "warn" ? "bg-warn-soft text-warn" : "bg-bad-soft text-bad")}>
             <span className={cx("size-2 rounded-full bg-current", connected && "live-ping")} />Live now
           </div>
-          <h2 className="max-w-[22ch] text-[30px] leading-[1.1] font-bold tracking-[-0.03em] sm:text-[38px]">{status.title}</h2>
-          <p className="mt-3 max-w-[56ch] text-[15px] text-ink-2">{status.sub}</p>
-          <div className="mt-6 flex flex-wrap gap-x-8 gap-y-3 text-[13px] text-ink-3">
+          <h2 className="max-w-[22ch] text-[28px] leading-[1.1] font-bold tracking-[-0.03em] sm:text-[34px]">{status.title}</h2>
+          <p className="mt-2.5 line-clamp-2 max-w-[56ch] text-[14.5px] text-ink-2">{status.sub}</p>
+          <div className="mt-5 flex flex-wrap gap-x-8 gap-y-3 text-[13px] text-ink-3">
             <span><b className="num block text-xl font-bold tracking-tight text-ink">{live.workers}</b>workers in view</span>
             <span><b className={cx("num block text-xl font-bold tracking-tight", live.bad ? "text-bad" : "text-ink")}>{live.bad}</b>non-compliant</span>
             <span><b className="num block text-xl font-bold tracking-tight text-ink">{live.online}<span className="text-ink-3">/{streams.length}</span></b>cameras live</span>
             <span><b className="num block text-xl font-bold tracking-tight text-ink">{fmtInt(today)}</b>incidents today</span>
           </div>
         </div>
-        {live.unsafe.length > 0 && (
-          <div className={cx("relative grid gap-3", live.unsafe.length > 1 && "sm:grid-cols-2")}>
-            {live.unsafe.slice(0, 4).map((s) => <CameraTile key={s.id} s={s} onOpen={openCamera} showZones={false} fps={6} />)}
-            {live.unsafe.length > 4 && (
-              <a href={href("monitoring")} className="col-span-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-bad-line bg-bad-soft py-2 text-[13px] font-semibold text-bad no-underline">
-                {live.unsafe.length - 4} more camera{live.unsafe.length - 4 === 1 ? "" : "s"} with someone unsafe<Icon name="arrowRight" size={14} />
-              </a>
-            )}
-          </div>
-        )}
+        <ActNow unsafe={live.unsafe} onOpen={openCamera} online={live.online} lastAt={open.items?.[0]?.timestamp ?? null} />
       </Panel>
 
       {/* ---- metrics ---- */}
@@ -323,8 +368,12 @@ export function OverviewPage() {
         {canAnalytics && (
           <Metric label="Compliance today" icon="shield"
             aside={data ? <Ring value={rate ?? 0} tone={rate === null ? "data" : rate >= target ? "ok" : rate >= target - 0.025 ? "warn" : "bad"} /> : undefined}
-            foot={<>Target {fmtPct(target, 0)}{delta !== null && <span className={cx("inline-flex items-center gap-0.5 font-semibold", delta >= 0 ? "text-ok" : "text-bad")}><Icon name={delta >= 0 ? "arrowUp" : "arrowDown"} size={12} />{Math.abs(delta).toFixed(1)} pts</span>}</>}>
-            {data ? <Num>{rate === null ? "–" : (rate * 100).toFixed(1)}<span className="text-xl text-ink-3">{rate === null ? "" : "%"}</span></Num> : <Skeleton className="h-9 w-24" />}
+            foot={<>Target {fmtPct(target, 0)}{data && rate === null && " · updates every minute"}{delta !== null && <span className={cx("inline-flex items-center gap-0.5 font-semibold", delta >= 0 ? "text-ok" : "text-bad")}><Icon name={delta >= 0 ? "arrowUp" : "arrowDown"} size={12} />{Math.abs(delta).toFixed(1)} pts</span>}</>}>
+            {!data ? <Skeleton className="h-9 w-24" />
+              : rate === null
+                // worker counts are saved once a minute: until then (or before anyone is seen today) there is no rate yet
+                ? <div className="flex min-h-9 items-center text-[15px] font-semibold text-ink-3">{live.workers > 0 ? "Calculating…" : "No workers checked yet"}</div>
+                : <Num>{(rate * 100).toFixed(1)}<span className="text-xl text-ink-3">%</span></Num>}
           </Metric>
         )}
         {canIncidents && (
@@ -348,7 +397,7 @@ export function OverviewPage() {
 
       {/* ---- the whole fleet at a glance ---- */}
       {streams.length > 1 && (
-        <Card className="mb-5" title="Camera fleet" sub={`All ${streams.length} cameras · unsafe and down first · select one to open it`}
+        <Card className="mb-5" title="Camera fleet" sub={`All ${streams.length} cameras in camera order · select one to open it`}
           actions={<><span className="hidden lg:block"><FleetLegend streams={streams} /></span>
             <a href={href("monitoring")} className="inline-flex h-8 items-center gap-1.5 rounded-[10px] px-3 text-[13px] font-semibold text-accent no-underline hover:bg-accent-soft">Video wall<Icon name="arrowRight" size={14} /></a></>}>
           <FleetBoard streams={streams} onOpen={openCamera} dense />
@@ -378,9 +427,7 @@ export function OverviewPage() {
           </Card>
         ) : (
           <Card title="Cameras" sub="Select one to open its live view">
-            {streams.length === 1
-              ? <CameraTile s={streams[0]} onOpen={openCamera} showZones={false} fps={4} />
-              : <FleetBoard streams={streams} onOpen={openCamera} />}
+            <FleetBoard streams={streams} onOpen={openCamera} />
           </Card>
         )}
 

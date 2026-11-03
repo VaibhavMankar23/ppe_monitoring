@@ -10,16 +10,24 @@ server:
   host: 0.0.0.0
   port: 8000
   static_dir: ${PPE_STATIC_DIR:-../frontend/dist}   # built frontend, served at /
-  cors_origins: ["*"]
+  cors_origins: []          # the dashboard is served from this server; list other origins only if needed
 
 model:
   weights: ${PPE_MODEL_WEIGHTS:-../models/safesight/best.pt}
   # Optional 2nd, general-purpose detector for phone-use detection (COCO "cell phone").
   # "" disables it. A camera also needs `detect_phone: true` in its stream entry to act on it.
   phone_weights: ${PPE_PHONE_WEIGHTS:-}   # e.g. ../models/coco/yolov8n.pt
-  # auto = CUDA if present, else OpenVINO on an Intel iGPU, else OpenVINO CPU, else PyTorch CPU.
+  # Dedicated person detector on 2x2 overlapping tiles: finds far, small, bent-over workers the PPE model
+  # misses on wide plant cameras (measured: 0-1 -> ~20 of ~20 workers). About 4x the detection cost on a
+  # CPU, cheap on a GPU. "" = people from the PPE model only.
+  person_weights: ${PPE_PERSON_WEIGHTS:-../models/coco/yolov8n.pt}
+  person_imgsz: 640
+  person_tiles: 2           # 1 = whole frame, 2 = 2x2 tiles, 3 = 3x3 (very wide or high cameras)
+  # auto = NVIDIA CUDA if present (TensorRT, else PyTorch), else OpenVINO on an Intel iGPU, else OpenVINO CPU,
+  # else PyTorch CPU.
   device: auto
   openvino: true            # auto-export the .pt to OpenVINO once (cached next to the weights)
+  tensorrt: true            # NVIDIA: build a TensorRT engine once (several minutes, cached next to the weights)
   imgsz: 480                # full-frame pass size on GPU/iGPU (PPE detail comes from person crops)
   cpu_imgsz: 480            # full-frame pass size on CPU-only
   half: true                # FP16 on CUDA only
@@ -27,33 +35,28 @@ model:
   iou: 0.7                  # NMS IoU threshold
   cpu_threads: 0
   # Raw model class name -> canonical name (unlisted names use the alias table in detector.py).
+  # Current model (models/safesight/best.pt, YOLO11s, 10 classes). Safety Cone / Machinery / Vehicle are not
+  # mapped, so they are ignored. A model with other class names needs its own entries here.
   class_map:
-    Worker: person
-    Hard_hat: helmet
-    Vest: vest
-    Glove: gloves
-    Glass: goggles
-    Boots: boots
+    Person: person
+    Hardhat: helmet
+    NO-Hardhat: no_helmet
+    Safety Vest: vest
+    NO-Safety Vest: no_vest
     Mask: mask
-    Ear-Protection: ear_protection
-    No-Helmet: no_helmet
-    No-Vest: no_vest
-    No-Glove: no_gloves
-    No-Glass: no_goggles
-    No-Boots: no_boots
-    No-Mask: no_mask
-    No-Ear-Protection: no_ear_protection
+    NO-Mask: no_mask
 
 inference:
   mode: batched             # batched | per_stream
-  max_fps_per_stream: 15
+  max_fps_per_stream: 3    # PPE needs 2-4 checks/s; 45 cameras x 3 = 135 frames/s keeps a GPU server in budget
   frame_skip: 0             # extra captured frames skipped between processed frames
   process_width: 960        # downscale frames to this width before inference/annotation
   jpeg_quality: 75
   person_refine: true       # second pass on full-resolution person crops
   refine_imgsz: 320
   refine_max_persons: 6
-  refine_batch: 2
+  refine_batch: 0           # person crops per model call; 0 = auto (8 on NVIDIA, 4 Intel GPU, 2 CPU)
+  max_batch: 0              # camera frames per model call; 0 = auto (16 on NVIDIA, 8 elsewhere)
 
 tracking:
   low_thresh: 0.15          # weakest detection that may continue an existing track
@@ -66,6 +69,9 @@ compliance:
   min_containment: 0.35
   smoothing_window: 6
   min_person_height: 60
+  # smallest worker (px tall at process width) on whom each item is judged; smaller = "unknown", never
+  # "missing" (a mask on a 60 px worker is a few pixels of face)
+  item_min_height: {mask: 90, goggles: 110, ear_protection: 110, gloves: 100}
 
 alerts:
   min_violation_frames: 6   # confirmation: consecutive non-compliant frames before a violation...
@@ -73,6 +79,7 @@ alerts:
   event_gap_seconds: 10     # a worker's violation event ends after this long without the violation
   cooldown_seconds: 120     # one violation per event; a new one for the same worker needs the event
                             # to have ended and this long since it began (ongoing events are extended)
+  verify_claims: true       # re-check each claimed missing item on the sharp evidence pass; drop what it shows worn
   snapshot_quality: 85      # JPEG quality of stored violation images
   save_original_frame: true # also keep the clean full-resolution frame as evidence
   retention_days: 30        # delete stored violations older than this (0 = keep forever)

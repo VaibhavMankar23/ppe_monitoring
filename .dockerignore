@@ -22,3 +22,9 @@ backend/data
 backend/config.backup.*.yaml
 # the local dev/runtime config never ships: the container reads /app/config/config.yaml (PPE_CONFIG)
 backend/config.yaml
+# secrets and databases never go into the image (the JWT secret lives in .env)
+**/.env
+**/.env.*
+!.env.example
+**/*.db
+**/*.db-*

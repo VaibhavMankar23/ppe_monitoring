@@ -11,6 +11,9 @@ FROM python:3.11-slim AS backend
 
 # cpu (default) or e.g. cu124 for an NVIDIA CUDA build of torch
 ARG TORCH_INDEX=cpu
+# the app runs as this unprivileged user; match the owner of the host folders mounted at /app/*
+ARG APP_UID=1000
+ARG APP_GID=1000
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -31,9 +34,19 @@ WORKDIR /app/backend
 COPY backend/requirements.txt .
 RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/${TORCH_INDEX} \
  && pip install -r requirements.txt
+# NVIDIA builds (TORCH_INDEX=cu*): what the one-time TensorRT engine build needs. Installed here because
+# the container runs as a non-root user and cannot pip-install at runtime.
+RUN case "${TORCH_INDEX}" in cu*) pip install "tensorrt-cu12>=10,!=10.2.0,<11" "onnx>=1.12,<2" "onnxslim>=0.1.82" onnxruntime-gpu ;; esac
 
 COPY backend/ ./
 COPY --from=frontend /frontend/dist /app/frontend/dist
+
+# not root: a compromise of the web app must not own the container. Host folders mounted at
+# /app/config, /app/data, /app/videos and /app/models must be writable by APP_UID:APP_GID.
+RUN groupadd -g ${APP_GID} ppe && useradd -u ${APP_UID} -g ${APP_GID} -M -d /app -s /usr/sbin/nologin ppe \
+ && mkdir -p /app/config /app/data /app/videos /app/models /tmp/ultralytics \
+ && chown -R ppe:ppe /app/config /app/data /app/videos /app/models /tmp/ultralytics
+USER ppe
 
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=90s CMD curl -fs http://localhost:8000/api/health || exit 1

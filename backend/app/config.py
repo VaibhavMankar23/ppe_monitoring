@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .ppe_logic import PPE_ITEMS
 
@@ -36,13 +36,14 @@ class ServerConfig(_Model):
     host: str = "0.0.0.0"
     port: int = Field(8000, ge=1, le=65535)
     static_dir: str = "../frontend/dist"
-    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+    cors_origins: list[str] = Field(default_factory=list)  # same-origin UI needs none
 
 
 class ModelConfig(_Model):
     weights: str = Field(min_length=1)
     device: Literal["auto", "cpu", "cuda", "cuda:0", "cuda:1", "intel:gpu", "intel:cpu"] = "auto"
     openvino: bool = True  # allow OpenVINO (auto-exported) when no CUDA GPU is present
+    tensorrt: bool = True  # NVIDIA GPU: build (once) and use a TensorRT engine, ~2-3x PyTorch; falls back to PyTorch
     imgsz: int = Field(640, ge=160, le=1920, multiple_of=32)
     cpu_imgsz: int = Field(480, ge=160, le=1920, multiple_of=32)
     half: bool = True
@@ -53,6 +54,12 @@ class ModelConfig(_Model):
     # Optional second, general-purpose detector for behaviour classes (currently "cell phone").
     # "" = phone detection off. A camera also needs streams[].detect_phone = true to act on it.
     phone_weights: str = ""
+    # Dedicated person detector (a COCO model, e.g. ../models/coco/yolov8n.pt) run on person_tiles x
+    # person_tiles overlapping tiles of the frame: finds far, small, bent-over workers the PPE model
+    # misses on wide plant cameras. "" = people come from the PPE model only.
+    person_weights: str = ""
+    person_imgsz: int = Field(640, ge=160, le=1920, multiple_of=32)
+    person_tiles: int = Field(2, ge=1, le=3)
 
 
 class InferenceConfig(_Model):
@@ -66,10 +73,10 @@ class InferenceConfig(_Model):
     person_refine: bool = True
     refine_imgsz: int = Field(320, ge=160, le=960, multiple_of=32)
     refine_max_persons: int = Field(6, ge=1, le=32)
-    refine_batch: int = Field(4, ge=1, le=16)
+    refine_batch: int = Field(0, ge=0, le=16)  # crops per model call; 0 = auto for the device (see pipeline.AUTO_BATCH)
     refine_min_height: int = Field(24, ge=0)  # px at process resolution
     # Scaling to many cameras
-    max_batch: int = Field(8, ge=1, le=32)  # frames per model call; ready cameras beyond this wait a turn
+    max_batch: int = Field(0, ge=0, le=32)  # frames per model call (0 = auto for the device); ready cameras beyond it wait a turn
     post_workers: int = Field(0, ge=0, le=32)  # post-processing pool size (0 = auto: half the CPU cores, 2-8)
     focus_pause_others: bool = False  # focus mode: while someone watches one camera full-screen, pause detection elsewhere
     paused_preview_fps: float = Field(4.0, gt=0, le=30)  # video rate of cameras whose detection is paused
@@ -90,6 +97,9 @@ class ComplianceConfig(_Model):
     min_containment: float = Field(0.35, ge=0.05, le=1.0)
     smoothing_window: int = Field(6, ge=1, le=60)
     min_person_height: int = Field(60, ge=0)
+    # smallest worker (px, at process resolution) on whom each item can be judged; below it the item is
+    # "unknown", never "missing". Face and hand items need a much larger worker than a helmet or vest.
+    item_min_height: dict[str, int] = Field(default_factory=lambda: {"mask": 90, "goggles": 110, "ear_protection": 110, "gloves": 100})
 
 
 class AlertConfig(_Model):
@@ -118,6 +128,9 @@ class AlertConfig(_Model):
     # Drop an alert when the full-resolution re-detection finds no person where the tracker had one
     # (a phantom "person" on machinery). Needs evidence_imgsz > 0.
     drop_unconfirmed: bool = True
+    # re-check each claimed missing item on the sharp evidence pass; claims it shows wrong are removed,
+    # and an alert with nothing left is not raised (needs evidence_imgsz > 0)
+    verify_claims: bool = True
 
 
 class SourceConfig(_Model):
@@ -136,6 +149,17 @@ class SourceConfig(_Model):
     @classmethod
     def _strip(cls, v: str) -> str:
         return v.strip()
+
+    @model_validator(mode="after")
+    def _network_scheme(self) -> "SourceConfig":
+        # FFmpeg / requests would also follow file:, concat:, ftp:, gopher: ... - only camera protocols
+        allowed = NETWORK_SCHEMES.get(self.type)
+        if allowed and not self.uri.lower().startswith(allowed):
+            raise ValueError(f"a {self.type} camera address must start with {' or '.join(allowed)}")
+        return self
+
+
+NETWORK_SCHEMES: dict[str, tuple[str, ...]] = {"rtsp": ("rtsp://", "rtsps://"), "http": ("http://", "https://")}
 
 
 class ZoneConfig(_Model):
@@ -250,14 +274,21 @@ class AppConfig(_Model):
         return v
 
 
-def expand_env(value: Any) -> Any:
-    """Replace ${VAR} / ${VAR:-default} in every string of a nested structure."""
+# Variables a camera definition may reference. Admins edit cameras and a camera's address is echoed
+# back (connection test, status messages), so ${PPE_JWT_SECRET} or ${PPE_SMTP_PASSWORD} must never
+# expand there; anything else is left as literal text.
+STREAM_ENV_VARS = frozenset({"PPE_VIDEOS_DIR"})
+
+
+def expand_env(value: Any, allowed: frozenset[str] | None = None) -> Any:
+    """Replace ${VAR} / ${VAR:-default} in every string of a nested structure (only `allowed` names, if given)."""
     if isinstance(value, str):
-        return _ENV_PATTERN.sub(lambda m: os.environ.get(m.group(1), m.group(2) or ""), value)
+        return _ENV_PATTERN.sub(lambda m: os.environ.get(m.group(1), m.group(2) or "")
+                                if allowed is None or m.group(1) in allowed else m.group(0), value)
     if isinstance(value, list):
-        return [expand_env(v) for v in value]
+        return [expand_env(v, allowed) for v in value]
     if isinstance(value, dict):
-        return {k: expand_env(v) for k, v in value.items()}
+        return {k: expand_env(v, allowed) for k, v in value.items()}
     return value
 
 
@@ -290,11 +321,17 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
     """
     import copy
 
-    data = _apply_env_overrides(expand_env(copy.deepcopy(raw or {})))
+    raw = copy.deepcopy(raw or {})
+    streams = raw.pop("streams", None)
+    data = _apply_env_overrides(expand_env(raw))
+    if streams is not None:
+        data["streams"] = expand_env(streams, STREAM_ENV_VARS)
     cfg = AppConfig.model_validate(data)
     cfg.model.weights = _resolve(cfg.model.weights, base_dir)
     if cfg.model.phone_weights:
         cfg.model.phone_weights = _resolve(cfg.model.phone_weights, base_dir)
+    if cfg.model.person_weights:
+        cfg.model.person_weights = _resolve(cfg.model.person_weights, base_dir)
     cfg.server.static_dir = _resolve(cfg.server.static_dir, base_dir)
     cfg.alerts.db_path = _resolve(cfg.alerts.db_path, base_dir)
     for s in cfg.streams:

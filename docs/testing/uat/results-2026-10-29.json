@@ -1,0 +1,262 @@
+{
+  "AUTH-09": {
+    "status": "Pass",
+    "actual": "admin / mahindra123 -> HTTP 401",
+    "at": "2026-10-29 00:41"
+  },
+  "AUTH-01": {
+    "status": "Pass",
+    "actual": "forced change screen: True; after saving landed on Command: True",
+    "at": "2026-10-29 00:41"
+  },
+  "AUTH-02": {
+    "status": "Pass",
+    "actual": "HTTP 401: Incorrect username or password.",
+    "at": "2026-10-29 00:41"
+  },
+  "AUTH-03": {
+    "status": "Pass",
+    "actual": "HTTP 401; same message as wrong password: True",
+    "at": "2026-10-29 00:41"
+  },
+  "AUTH-04": {
+    "status": "Pass",
+    "actual": "attempt status codes: [401, 401, 401, 401, 401, 429]",
+    "at": "2026-10-29 00:41"
+  },
+  "USR-01": {
+    "status": "Pass",
+    "actual": "create admin HTTP 201; second user HTTP 201; its first sign-in must change password: True",
+    "at": "2026-10-29 00:41"
+  },
+  "AUTH-05": {
+    "status": "Pass",
+    "actual": "weak passwords refused with HTTP [400, 400, 400]",
+    "at": "2026-10-29 00:41"
+  },
+  "USR-02": {
+    "status": "Pass",
+    "actual": "deactivate HTTP 200; sign-in afterwards HTTP 403: This account has been deactivated. Contact a Super Admin.",
+    "at": "2026-10-29 00:41"
+  },
+  "ROLE-03": {
+    "status": "Pass",
+    "actual": "Admin dataset export HTTP 403; Admin CSV export HTTP 200",
+    "at": "2026-10-29 00:41"
+  },
+  "ROLE-04": {
+    "status": "Pass",
+    "actual": "Admin changing the detection rate -> HTTP 403",
+    "at": "2026-10-29 00:41"
+  },
+  "ROLE-05": {
+    "status": "Pass",
+    "actual": "rename HTTP 200, live name 'Gate No. 2 (UAT)', rename back HTTP 200",
+    "at": "2026-10-29 00:41"
+  },
+  "ROLE-06": {
+    "status": "Pass",
+    "actual": "Super Admin saved alarm secrets HTTP 200; visible to Admin: False",
+    "at": "2026-10-29 00:41"
+  },
+  "SET-01": {
+    "status": "Pass",
+    "actual": "save HTTP 200; running limit now 2.0 fps; server uptime kept (32 s)",
+    "at": "2026-10-29 00:41"
+  },
+  "SET-02": {
+    "status": "Pass",
+    "actual": "valid=False; error: YAML syntax error: expected the node content, but found '-' (line 2)",
+    "at": "2026-10-29 00:41"
+  },
+  "SET-03": {
+    "status": "Pass",
+    "actual": "4 backups listed after the saves above (restore itself: manual)",
+    "at": "2026-10-29 00:41"
+  },
+  "CAM-01": {
+    "status": "Pass",
+    "actual": "NVR_ch12_main_20261013140005_20261013150005.cpv: ok=True 1920x1080 @ 25.0 fps",
+    "at": "2026-10-29 00:41"
+  },
+  "CAM-02": {
+    "status": "Pass",
+    "actual": "ok=False after 3 s: cannot connect to rtsp://10.255.255.1/stream within 3s (check the address, port, path and ",
+    "at": "2026-10-29 00:41"
+  },
+  "CAM-04": {
+    "status": "Pass",
+    "actual": "Store Dock requires ['helmet', 'vest', 'gloves']; flagged as not checked: ['gloves']",
+    "at": "2026-10-29 00:41"
+  },
+  "LIVE-07": {
+    "status": "Pass",
+    "actual": "stop HTTP 200 -> stopped; start HTTP 200 -> live",
+    "at": "2026-10-29 00:41"
+  },
+  "SEC-01": {
+    "status": "Pass",
+    "actual": "HTTP 200; returned 'the dashboard page'",
+    "at": "2026-10-29 00:41"
+  },
+  "SEC-02": {
+    "status": "Pass",
+    "actual": "CSP present: True; X-Frame-Options DENY; nosniff nosniff",
+    "at": "2026-10-29 00:41"
+  },
+  "SEC-03": {
+    "status": "Pass",
+    "actual": "HTTP 200; secret in reply: False",
+    "at": "2026-10-29 00:41"
+  },
+  "SEC-04": {
+    "status": "Pass",
+    "actual": "without sign-in: {'/api/violations': 401, '/api/config': 401, '/api/users': 401, '/api/system/health': 401}",
+    "at": "2026-10-29 00:41"
+  },
+  "SEC-05": {
+    "status": "Pass",
+    "actual": "pre-flight from evil.example: HTTP 400, Allow-Origin=None",
+    "at": "2026-10-29 00:41"
+  },
+  "CMD-01": {
+    "status": "Pass",
+    "actual": "status '1 worker is unsafe right now' shown after 0.0 s",
+    "at": "2026-10-29 00:41"
+  },
+  "CMD-04": {
+    "status": "Pass",
+    "actual": "all four cards shown",
+    "at": "2026-10-29 00:41"
+  },
+  "CMD-05": {
+    "status": "Pass",
+    "actual": "Camera fleet shown: True; cameras missing: none",
+    "at": "2026-10-29 00:41"
+  },
+  "CMD-02": {
+    "status": "Pass",
+    "actual": "live video frames on Command after 10 s: 0",
+    "at": "2026-10-29 00:41"
+  },
+  "CMD-03": {
+    "status": "Pass",
+    "actual": "row 'Gate No. 2 | 2 of 2 in view unsafe | View | No helmet | No vest | No mask' opened /monitoring?camera=gate-2",
+    "at": "2026-10-29 00:41"
+  },
+  "CMD-06": {
+    "status": "Pass",
+    "actual": "landed on /incidents",
+    "at": "2026-10-29 00:41"
+  },
+  "LIVE-01": {
+    "status": "Pass",
+    "actual": "3 live video tiles rendering for 3 cameras",
+    "at": "2026-10-29 00:41"
+  },
+  "LIVE-02": {
+    "status": "Pass",
+    "actual": "tiles after searching 'Gate': 1",
+    "at": "2026-10-29 00:42"
+  },
+  "LIVE-03": {
+    "status": "Pass",
+    "actual": "board shows all cameras: True",
+    "at": "2026-10-29 00:42"
+  },
+  "REV-01": {
+    "status": "Pass",
+    "actual": "3 incidents arrived in the queue from live detection",
+    "at": "2026-10-29 00:42"
+  },
+  "REV-02": {
+    "status": "Pass",
+    "actual": "evidence image shown: True; person crop shown: True",
+    "at": "2026-10-29 00:42"
+  },
+  "REV-03": {
+    "status": "Pass",
+    "actual": "Valid button bottom at 879 px of a 950 px window",
+    "at": "2026-10-29 00:42"
+  },
+  "REV-04": {
+    "status": "Pass",
+    "actual": "after pressing V: 1 incident(s) confirmed valid (by admin)",
+    "at": "2026-10-29 00:42"
+  },
+  "REV-05": {
+    "status": "Pass",
+    "actual": "false alarm without reason HTTP 422; with reason HTTP 200 (keyboard flow F,1,Enter: manual)",
+    "at": "2026-10-29 00:42"
+  },
+  "REV-07": {
+    "status": "Pass",
+    "actual": "filter camera=gate-2: 4 results, all from that camera",
+    "at": "2026-10-29 00:42"
+  },
+  "REV-08": {
+    "status": "Pass",
+    "actual": "HTTP 200, text/csv; charset=utf-8, 4 data rows",
+    "at": "2026-10-29 00:42"
+  },
+  "INS-02": {
+    "status": "Pass",
+    "actual": "reviewed 2 of 4; alert precision 0.5",
+    "at": "2026-10-29 00:42"
+  },
+  "INS-03": {
+    "status": "Pass",
+    "actual": "end before start -> HTTP 422",
+    "at": "2026-10-29 00:42"
+  },
+  "INS-01": {
+    "status": "Pass",
+    "actual": "page 'Reports'; console errors: none",
+    "at": "2026-10-29 00:42"
+  },
+  "REV-09": {
+    "status": "Pass",
+    "actual": "delete HTTP 200; fetch afterwards HTTP 404; in audit trail: True",
+    "at": "2026-10-29 00:42"
+  },
+  "SYS-01": {
+    "status": "Pass",
+    "actual": "device intel:cpu; per camera (name, fps, latency ms): [('Gate No. 2', 1.1, 831), ('Assembly Line 3', 1.2, 668), ('Store Dock', 1.2, 530)]",
+    "at": "2026-10-29 00:42"
+  },
+  "SYS-02": {
+    "status": "Pass",
+    "actual": "planner shown: True; '45 cameras need 90 frames/s: about 42\u00d7 what this server can do.'",
+    "at": "2026-10-29 00:42"
+  },
+  "USR-03": {
+    "status": "Pass",
+    "actual": "recorded: auth.login, auth.login_failed, config.update, user.create, violation.delete, violation.review; missing: none (re-run after fixing the test's own limit=500 > API max 200)",
+    "at": "2026-10-29 00:43"
+  },
+  "ROLE-01": {
+    "status": "Pass",
+    "actual": "Admin sees People: False; Audit trail: False",
+    "at": "2026-10-29 00:42"
+  },
+  "ROLE-02": {
+    "status": "Pass",
+    "actual": "#/users as Admin shows the no-access page: True",
+    "at": "2026-10-29 00:42"
+  },
+  "AUTH-07": {
+    "status": "Pass",
+    "actual": "after reload still signed in on Review: True",
+    "at": "2026-10-29 00:42"
+  },
+  "AUTH-06": {
+    "status": "Pass",
+    "actual": "after sign-out, opening Command shows the sign-in page: True",
+    "at": "2026-10-29 00:42"
+  },
+  "UX-01": {
+    "status": "Pass",
+    "actual": "page width at 390 px screen: {'overview': 390, 'incidents': 390}",
+    "at": "2026-10-29 00:42"
+  }
+}

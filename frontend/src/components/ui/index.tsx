@@ -271,7 +271,17 @@ export function Notice({ tone = "accent", title, children, action, className }:
 // open overlays, oldest first: only the top one reacts to Escape / Tab, so a dialog over a drawer closes alone
 const overlayStack: object[] = [];
 
-function useOverlay(open: boolean, onClose: () => void) {
+/** The page behind scrolls exactly when no dialog / drawer / viewer is open. Each overlay used to save
+ * and restore body overflow itself: with two open and closed out of order, the last one restored
+ * "hidden" and the whole app could no longer scroll until a reload. */
+export function lockScroll(): void {
+  document.body.style.overflow = overlayStack.length ? "hidden" : "";
+}
+
+/** Is any overlay open? (keyboard shortcuts of the page behind should stay quiet) */
+export const overlayOpen = (): boolean => overlayStack.length > 0;
+
+export function useOverlay(open: boolean, onClose: () => void) {
   const ref = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
   close.current = onClose; // callers may pass a new function every render: never a reason to re-run the effect
@@ -282,7 +292,8 @@ function useOverlay(open: boolean, onClose: () => void) {
     const prev = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => {
       if (overlayStack[overlayStack.length - 1] !== token) return;
-      if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); close.current(); }
+      // a part of the overlay that handles Esc itself (an open picker) gets it first
+      if (e.key === "Escape" && !e.defaultPrevented && !ref.current?.querySelector("[data-own-escape]")) { e.stopPropagation(); close.current(); }
       if (e.key !== "Tab" || !ref.current) return;
       const f = ref.current.querySelectorAll<HTMLElement>('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])');
       if (!f.length) return;
@@ -291,13 +302,12 @@ function useOverlay(open: boolean, onClose: () => void) {
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     };
     document.addEventListener("keydown", onKey, true);
-    const overflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    lockScroll();
     queueMicrotask(() => { if (ref.current && !ref.current.contains(document.activeElement)) ref.current.focus(); });
     return () => {
       overlayStack.splice(overlayStack.indexOf(token), 1);
       document.removeEventListener("keydown", onKey, true);
-      document.body.style.overflow = overflow;
+      lockScroll();
       prev?.focus?.();
     };
   }, [open]);

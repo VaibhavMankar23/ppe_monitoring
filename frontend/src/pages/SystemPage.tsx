@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Page } from "../components/layout/Shell";
-import { Button, cx, Empty, Notice, Panel, PanelHeader, Skeleton, Stat, StatusDot, Tag, type Tone } from "../components/ui";
+import { Button, cx, Empty, Notice, Panel, PanelHeader, Segmented, Skeleton, Stat, StatusDot, Tag, type Tone } from "../components/ui";
 import { api } from "../lib/api";
 import { fmtAgo, fmtDuration, fmtInt } from "../lib/format";
 import { navigate } from "../lib/router";
@@ -88,6 +88,67 @@ function UtilisationMeter({ value }: { value: number }) {
   );
 }
 
+/** Plant roll-out size the planner checks against (minimum and full build-out). */
+const PLANT_CAMERAS = [30, 45];
+const HEADROOM = 0.7; // plan to keep the detector at most 70% busy (the "busy" line on the meter)
+type PlanRate = "1" | "2" | "3" | "5";
+
+/**
+ * "Will N cameras fit on this server?" from what the detector actually costs right now: its time
+ * per analysed frame (person crops and CPU contention included) gives the frames/s it could do
+ * at 100% busy. Decoding is not counted separately; it shows up as CPU load in Host.
+ */
+function CapacityPlanner({ engines, cameras, maxFps }: { engines: SystemHealth["engines"]; cameras: number; maxFps?: number }) {
+  const [rate, setRate] = useState<PlanRate>("2");
+  const measured = engines.filter((e) => (e.ms_per_frame ?? 0) > 0 && e.frames_per_s > 0);
+  const ceiling = measured.reduce((s, e) => s + 1000 / (e.ms_per_frame as number), 0); // frames/s at 100% busy
+  const fps = Number(rate);
+  const fits = Math.floor((ceiling * HEADROOM) / fps);
+  const msPerFrame = measured.length ? 1000 / ceiling : 0;
+  return (
+    <Panel>
+      <PanelHeader title="Capacity planner"
+        hint={`How many cameras this server can check, measured from the detector's real cost per frame. Planned with ${Math.round((1 - HEADROOM) * 100)}% headroom.`}
+        actions={<Segmented size="sm" label="Detection rate per camera" value={rate} onChange={setRate}
+          options={(["1", "2", "3", "5"] as PlanRate[]).map((v) => ({ value: v, label: `${v} fps` }))} />} />
+      {measured.length === 0 ? (
+        <p className="p-4 text-[13px] text-ink-3">Measuring… start at least one camera and wait a few seconds.</p>
+      ) : (
+        <div className="grid gap-x-6 gap-y-5 p-4 sm:grid-cols-2 lg:grid-cols-[repeat(2,minmax(0,0.8fr))_minmax(0,1.6fr)]">
+          <Stat label="Detector cost" value={msPerFrame.toFixed(0)} unit="ms / frame"
+            hint={`About ${ceiling.toFixed(1)} frames/s at full load, on ${measured.map((e) => e.device).join(", ")}`} />
+          <Stat label={`Cameras at ${fps} fps`} value={fmtInt(fits)} tone={fits < PLANT_CAMERAS[0] ? "bad" : undefined}
+            hint={<>You run {cameras} now{maxFps ? `, set to at most ${maxFps} fps each` : ""}</>} />
+          <ul className="grid gap-2">
+            {PLANT_CAMERAS.map((n) => {
+              const need = n * fps;
+              const ok = need <= ceiling * HEADROOM;
+              const factor = need / (ceiling * HEADROOM);
+              return (
+                <li key={n} className="flex items-start gap-2.5 text-[13px]">
+                  <StatusDot tone={ok ? "ok" : "bad"} />
+                  <span className="min-w-0">
+                    <span className="font-semibold text-ink">{n} cameras</span>
+                    <span className="text-ink-2"> need {fmtInt(need)} frames/s: </span>
+                    {ok ? <span className="text-ok">fits on this server.</span>
+                      : <span className="text-bad">about {factor < 10 ? factor.toFixed(1) : Math.round(factor)}× what this server can do.</span>}
+                  </span>
+                </li>
+              );
+            })}
+            {fits < PLANT_CAMERAS[PLANT_CAMERAS.length - 1] && (
+              <li className="text-xs text-ink-3">
+                Options: an NVIDIA GPU (detected and used automatically), more servers each taking a share of the cameras,
+                the cameras' sub-stream instead of the main stream, or a lower rate (PPE checks rarely need more than 2 fps).
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 function Ago({ at, now, tone }: { at: number | null | undefined; now: number; tone?: Tone }) {
   if (!at) return <span className="text-ink-3">Never</span>;
   return <span className={cx("num", tone && TEXT[tone])}>{fmtAgo(at, now)}</span>;
@@ -127,6 +188,7 @@ function CameraRow({ c, now }: { c: CameraHealth; now: number }) {
       </td>
       <td className={cx("num text-right", c.reconnects > 0 && "text-warn")}>{fmtInt(c.reconnects)}</td>
       <td className="num text-right">{fmtInt(c.alerts_dropped ?? 0)}</td>
+      <td className="num text-right">{fmtInt(c.alerts_disproved ?? 0)}</td>
       <td className="text-right whitespace-nowrap"><Ago at={c.last_frame_at} now={now} tone={frameTone} /></td>
       <td className="text-right whitespace-nowrap"><Ago at={c.last_detection_at} now={now} /></td>
       <td className="text-right whitespace-nowrap"><Ago at={c.last_violation_at} now={now} /></td>
@@ -202,8 +264,7 @@ export function SystemPage() {
 
   const cap = CAPACITY[health.capacity.state] ?? CAPACITY.ok;
   const host = health.host;
-  const cams = [...health.cameras].sort((a, b) =>
-    statusOf(a.status).rank - statusOf(b.status).rank || b.latency_ms - a.latency_ms || a.name.localeCompare(b.name));
+  const cams = health.cameras; // configured camera order; the status column shows problems
   const running = health.cameras.filter((c) => c.running).length;
   const troubled = health.cameras.filter((c) => statusOf(c.status).rank < 2).length;
   const staleFor = lastOk == null ? 0 : Math.max(0, Math.round(now - lastOk));
@@ -236,6 +297,9 @@ export function SystemPage() {
             <Sparkline values={hist.engine} label="Engine utilisation" />
           </div>
         </Panel>
+
+        <CapacityPlanner engines={health.engines} cameras={health.cameras.filter((c) => c.enabled).length}
+          maxFps={health.capacity.max_fps_per_stream} />
 
         <Panel>
           <PanelHeader title="Host" hint="The machine running detection. Video decoding counts towards CPU." />
@@ -304,14 +368,14 @@ export function SystemPage() {
         <Panel>
           <PanelHeader title="Cameras"
             hint={health.cameras.length === 0 ? undefined
-              : <>{running} of {health.cameras.length} running{troubled > 0 ? `, ${troubled} with a problem (listed first)` : ""}. Dropped frames are stale frames skipped on purpose, so a high share is normal for fast sources; reconnects and errors are not.</>} />
+              : <>{running} of {health.cameras.length} running{troubled > 0 ? `, ${troubled} with a problem` : ""}. Dropped frames are stale frames skipped on purpose, so a high share is normal for fast sources; reconnects and errors are not.</>} />
           {health.cameras.length === 0 ? (
             <Empty icon="camera" title="No cameras yet" action={<Button icon="camera" onClick={() => navigate("devices")}>Open Cameras &amp; zones</Button>}>
               Add a camera in Cameras &amp; zones and its throughput will show up here.
             </Empty>
           ) : (
             <div className="scroll-thin overflow-x-auto">
-              <table className="table min-w-[1180px]">
+              <table className="table min-w-[1280px]">
                 <thead>
                   <tr>
                     <th>Camera</th><th>Status</th>
@@ -321,6 +385,7 @@ export function SystemPage() {
                     <th className="text-right">Frames dropped</th>
                     <th className="text-right">Reconnects</th>
                     <th className="text-right" title="Alerts dropped as phantom detections: the evidence check found nothing there">Phantom alerts dropped</th>
+                    <th className="text-right" title="Alerts not raised because the sharp evidence check showed every claimed item worn">Alerts disproved</th>
                     <th className="text-right">Last frame</th><th className="text-right">Last detection</th><th className="text-right">Last violation</th>
                     <th>Last error</th>
                   </tr>

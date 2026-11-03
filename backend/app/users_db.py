@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import secrets
 import threading
 import time
 from dataclasses import dataclass, field
@@ -232,13 +234,22 @@ class UserStore:
         """Create the bootstrap super_admin if (and only if) there are no users at all. Idempotent."""
         if self.count() > 0:
             return False
+        # Never a published password: whoever reaches the sign-in page first would own the plant's
+        # Super Admin. The operator sets one (env) or reads the random one from this server's log.
+        chosen = os.environ.get("PPE_INITIAL_ADMIN_PASSWORD", "")
+        password = chosen or secrets.token_urlsafe(12)
         try:
-            self.create(SEED_USERNAME, SEED_PASSWORD, "super_admin", must_change_password=True)
+            self.create(SEED_USERNAME, password, "super_admin", must_change_password=True)
         except UserError:  # another process seeded it between count() and create()
             return False
-        log.warning("SECURITY: no users existed, so the default account '%s' (role super_admin) was created with "
-                    "the documented seed password. It must be changed at first sign-in - rotate it now, "
-                    "especially on any networked deployment.", SEED_USERNAME)
+        if chosen:
+            log.warning("SECURITY: no users existed, so the default account '%s' (role super_admin) was created with "
+                        "the password from PPE_INITIAL_ADMIN_PASSWORD. It must be changed at first sign-in - rotate it "
+                        "now and remove the variable.", SEED_USERNAME)
+        else:
+            log.warning("SECURITY: no users existed, so the default account '%s' (role super_admin) was created with "
+                        "the one-time password %s . It must be changed at first sign-in - rotate it now.",
+                        SEED_USERNAME, password)
         return True
 
     # ------------------------------------------------------------ refresh tokens (sessions)

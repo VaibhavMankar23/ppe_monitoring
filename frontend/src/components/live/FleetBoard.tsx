@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo } from "react";
 import type { StreamInfo } from "../../types";
 import { cx } from "../ui";
 import { STATUS } from "./status";
@@ -9,9 +9,8 @@ export const fleetState = (s: StreamInfo): FleetState =>
   !s.running ? "stopped" : s.status !== "live" ? "down" : s.violations > 0 ? "violation" : "ok";
 
 /** Order for a plant-sized fleet: what needs a person first, then the rest by name. */
-const RANK: Record<FleetState, number> = { violation: 0, down: 1, ok: 2, stopped: 3 };
-export const byAttention = (a: StreamInfo, b: StreamInfo) =>
-  RANK[fleetState(a)] - RANK[fleetState(b)] || b.violations - a.violations || a.name.localeCompare(b.name, undefined, { numeric: true });
+// Cameras are always shown in the configured order (Setup > Cameras & zones), never re-sorted by
+// status: a camera keeps its place on every screen, and colour shows what needs attention.
 
 const CELL: Record<FleetState, string> = {
   violation: "border-bad-line bg-bad-soft",
@@ -29,14 +28,14 @@ export function fleetCounts(streams: StreamInfo[]) {
 
 /**
  * Every camera as one compact status cell, no video: 40-50 cameras fit on one screen, so a
- * supervisor sees the whole plant at once. Cells needing a person sort first.
+ * supervisor sees the whole plant at once. Cameras stay in their configured order; colour marks
+ * the ones needing a person.
  */
 export const FleetBoard = memo(function FleetBoard({ streams, onOpen, dense = false }:
   { streams: StreamInfo[]; onOpen: (id: string) => void; dense?: boolean }) {
-  const sorted = useMemo(() => [...streams].sort(byAttention), [streams]);
   return (
     <div className={cx("grid gap-2", dense ? "grid-cols-[repeat(auto-fill,minmax(150px,1fr))]" : "grid-cols-[repeat(auto-fill,minmax(190px,1fr))]")}>
-      {sorted.map((s) => {
+      {streams.map((s) => {
         const st = fleetState(s);
         return (
           <button key={s.id} type="button" onClick={() => onOpen(s.id)} title={`${s.name}: ${STATUS[s.status].label}${s.message ? ` · ${s.message}` : ""}`}

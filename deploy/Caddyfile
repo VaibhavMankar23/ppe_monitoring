@@ -1,0 +1,27 @@
+# HTTPS in front of the PPE monitor (used by deploy/docker-compose.https.yml).
+#
+# PPE_DOMAIN is the name users type, e.g. ppe.plant.local (set it in .env).
+# Certificate, pick one:
+#   - plant / company certificate: put cert.pem + key.pem in deploy/certs/ and use the
+#     "tls /certs/cert.pem /certs/key.pem" line below (recommended on a plant LAN)
+#   - "tls internal": Caddy's own local CA; browsers warn until that CA is installed on the PCs
+#   - a public domain name with internet access: delete the tls line for an automatic certificate
+
+{$PPE_DOMAIN:ppe.plant.local} {
+	tls internal
+	# tls /certs/cert.pem /certs/key.pem
+
+	encode gzip
+	# live video and the WebSocket are proxied as-is; uploads of large recordings are allowed
+	request_body {
+		max_size 8GB
+	}
+	reverse_proxy ppe-monitor:8000
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+}
+
+# plain http:// requests are redirected to https:// automatically by Caddy
