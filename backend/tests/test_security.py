@@ -89,7 +89,8 @@ def test_connection_test_rejects_non_camera_protocols_and_outside_paths(env, tmp
     assert r.status_code == 422 and "videos" in r.text
 
 
-def test_stored_camera_password_is_only_reused_for_the_same_camera(env):
+def test_stored_camera_password_is_only_reused_for_the_same_camera(env, monkeypatch):
+    monkeypatch.setenv("PPE_SECRET_KEY", "unit-test-key")  # don't depend on a local backend/.env
     sup = bearer(env.tokens["super"])
     doc = env.get("/api/config", headers=sup).json()
     cfg = doc["config"]
