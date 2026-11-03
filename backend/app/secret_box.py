@@ -71,6 +71,22 @@ def split_uri_credentials(uri: str) -> tuple[str, str | None, str | None]:
     return m["scheme"] + m["rest"], unquote(m["user"]) or None, unquote(m["pw"]) if m["pw"] is not None else None
 
 
+def same_endpoint(a: str, b: str) -> bool:
+    """True when two camera URIs name the same scheme, host and port (credentials and path ignored).
+    A stored camera password is only ever re-sent to the endpoint it was saved for."""
+    from urllib.parse import urlsplit
+
+    def key(uri: str) -> tuple[str, str, int | None] | None:
+        try:
+            p = urlsplit(split_uri_credentials(uri or "")[0])
+            return p.scheme.lower(), (p.hostname or "").lower(), p.port
+        except ValueError:  # malformed port
+            return None
+
+    ka = key(a)
+    return ka is not None and ka == key(b)
+
+
 def with_uri_credentials(uri: str, username: str, password: str) -> str:
     """Insert (URL-quoted) credentials into a network URI: used only at open time, never stored."""
     if not username:

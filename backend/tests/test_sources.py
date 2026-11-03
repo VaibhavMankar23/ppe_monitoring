@@ -223,3 +223,54 @@ def test_grabber_counts_drops_and_reconnects_then_goes_offline(monkeypatch):
     assert g.state == "offline" and "unreachable" in g.last_error
     g.stop()
     assert g.state == "stopped"
+
+
+class _Counting(_Scripted):
+    """Like _Scripted, but counts how many frames were actually converted (retrieve)."""
+
+    def __init__(self, cfg, max_width=0, n=10_000):
+        super().__init__(cfg, max_width, n)
+        self.retrieved = 0
+
+    def grab(self):
+        self.i += 1
+        time.sleep(0.002)
+        return self.i <= self.n
+
+    def retrieve(self):
+        self.retrieved += 1
+        return np.full((40, 60, 3), self.i % 255, np.uint8)
+
+
+def test_grabber_skips_converting_frames_nobody_takes():
+    _Scripted.down = False
+    src = _Counting(SourceConfig(type="rtsp", uri="rtsp://x/y"))
+    g = FrameGrabber("t", src.cfg, 960, source_factory=lambda c, w: src)
+    g.start()
+    time.sleep(0.5)
+    first = g.latest()
+    g.mark_taken(first.seq)  # the pipeline consumed it: the next grabbed frame is converted at once
+    time.sleep(0.05)
+    newer = g.latest()
+    g.stop()
+    assert src.i > 100  # ~2 ms per frame: well over 100 frames decoded
+    assert src.retrieved <= 6  # untaken: converted only every REFRESH_S (0.2 s), plus the take
+    assert newer.seq > first.seq and time.monotonic() - newer.ts < 0.3
+    assert g.frames_dropped >= src.i - src.retrieved - 1  # skipped frames still count as dropped
+
+
+def test_recording_skips_corrupt_frames_instead_of_restarting(monkeypatch):
+    """A few unreadable frames mid-file (corrupt H.265 in NVR exports) are skipped; only a long run
+    of failures is the end of the recording."""
+    from app.sources import FileStreamSource
+
+    script = iter([True, True, False, False, True] + [False] * FileStreamSource.MAX_BAD_FRAMES)
+
+    class Cap:
+        def grab(self):
+            return next(script)
+
+    src = FileStreamSource(SourceConfig(type="file", uri="x.cpv"))
+    src._cap = Cap()  # type: ignore[assignment]
+    assert [src.grab(), src.grab(), src.grab()] == [True, True, True]  # the 2 corrupt frames are skipped
+    assert src.grab() is False  # a long run of failures: the real end of the file

@@ -33,7 +33,7 @@ Five workspaces in a floating top navigation, ordered by frequency of use:
 | Workspace | Route | Contains |
 |---|---|---|
 | **Command** | `#/overview` | Plant status in one sentence, workers needing attention now, review progress, today's compliance, camera health, latest events |
-| **Live** | `#/monitoring` | Video wall (1×1 / 2×2 / 3×3), filters, live event rail |
+| **Live** | `#/monitoring` | Video wall (2×2 / 3×3 / 4×4, full width, cameras in configured order), board, filters |
 | **Review** | `#/incidents` | Three-pane triage: queue, evidence, verdict. J/K/V/F keyboard flow |
 | **Insights** | `#/reports` | Trends, breakdowns, export |
 | **Setup** | `#/devices`, `#/settings`, `#/system`, `#/users`, `#/audit` | Cameras & zones, Detection, System health, People, Audit trail (secondary tabs) |
@@ -67,7 +67,7 @@ Testing runs on one camera; the plant will run 40-45. What changes at that scale
 | 45 live video tiles at once overload the browser, the network and the server | **Paged video wall**: 4 / 9 / 16 tiles per page, frame rate drops as tiles shrink (8 → 5 → 3 fps), only on-screen tiles stream |
 | Nobody can watch 45 videos | **Fleet board**: every camera as a small status cell (unsafe / not delivering / clear / stopped), all 45 on one screen, no video cost. On Command and as Live's "Board" view |
 | A control-room screen must cover all cameras unattended | **Auto-cycle**: the wall turns the page every 20 s, and **holds while anyone is unsafe** so an alert is never cycled away |
-| The important cameras get lost in a long list | Everywhere cameras are listed, **unsafe first, then not delivering, then the rest by name** |
+| The important cameras get lost in a long list | Cameras keep **their configured order everywhere** (decided 29 Oct 2026: re-sorting by status moved tiles around and made the page jump); colour, the Act now list and the fleet legend show what needs attention |
 | Long camera names make sentences unreadable | Status sentences name at most 3 cameras ("A, B, C and 4 more"); the hero shows up to 4 unsafe cameras live, with a link to the rest |
 | Finding one camera among 45 | Search on Live and on Cameras & zones; "Needs attention" / "Turned off" filters; Ctrl K finds any camera |
 | "Down" mixed up with "switched off on purpose" | "Down" counts only cameras that should be running but aren't |

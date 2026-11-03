@@ -17,7 +17,7 @@ function useOnScreen<T extends Element>() {
   return [ref, on] as const;
 }
 
-function TileImpl({ s, onOpen, showZones, fps, card = false }: { s: StreamInfo; onOpen: (id: string) => void; showZones: boolean; fps: number; card?: boolean }) {
+function TileImpl({ s, onOpen, showZones, fps, width = 0, card = false }: { s: StreamInfo; onOpen: (id: string) => void; showZones: boolean; fps: number; width?: number; card?: boolean }) {
   const [ref, visible] = useOnScreen<HTMLButtonElement>();
   const st = STATUS[s.status];
   const aspect = s.frame_size ? s.frame_size[0] / s.frame_size[1] : 16 / 9;
@@ -31,7 +31,7 @@ function TileImpl({ s, onOpen, showZones, fps, card = false }: { s: StreamInfo; 
       <div className={cx("relative", card ? "aspect-video" : "aspect-[16/10]")}>
         {s.running && visible
           ? <div className="absolute inset-0">
-              <CameraVideo fit streamId={s.id} fps={fps} aspect={aspect} className="size-full">
+              <CameraVideo fit streamId={s.id} fps={fps} width={width} aspect={aspect} className="size-full">
                 {showZones && s.zones && <ZoneOverlay zones={s.zones} labels={false} />}
               </CameraVideo>
             </div>
@@ -88,7 +88,7 @@ function TileImpl({ s, onOpen, showZones, fps, card = false }: { s: StreamInfo; 
 /** Stats tick 4x/s: re-render a tile only when something it shows changed. */
 export const CameraTile = memo(TileImpl, (a, b) => {
   const x = a.s, y = b.s;
-  return a.onOpen === b.onOpen && a.card === b.card && a.showZones === b.showZones && a.fps === b.fps && x.id === y.id && x.name === y.name && x.status === y.status
+  return a.onOpen === b.onOpen && a.card === b.card && a.showZones === b.showZones && a.fps === b.fps && a.width === b.width && x.id === y.id && x.name === y.name && x.status === y.status
     && x.message === y.message && x.running === y.running && x.paused === y.paused && x.workers === y.workers && x.compliant === y.compliant
     && x.violations === y.violations && x.unknown === y.unknown && x.fps === y.fps && Math.round(x.latency_ms / 50) === Math.round(y.latency_ms / 50)
     && x.zones === y.zones && x.frame_size?.[0] === y.frame_size?.[0];

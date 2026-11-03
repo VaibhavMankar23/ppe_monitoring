@@ -156,6 +156,63 @@ def _invalid(e: ConfigInvalid) -> JSONResponse:
     return JSONResponse(status_code=422, content={"detail": "invalid configuration", "errors": [x.to_dict() for x in e.errors]})
 
 
+# Alarm credentials only Super Admins may see: the SMTP password and the webhook URL (often a bearer secret).
+_ALARM_SECRETS = (("alarm", "email", "password"), ("alarm", "webhook", "url"))
+_SECRET_MASK = "********"
+
+
+def _mask_alarm_secrets(raw: dict[str, Any]) -> dict[str, Any]:
+    import copy
+
+    out = copy.deepcopy(raw)
+    for a, b, c in _ALARM_SECRETS:
+        node = (out.get(a) or {}).get(b)
+        if isinstance(node, dict) and node.get(c):
+            node[c] = _SECRET_MASK
+    return out
+
+
+def _unmask_alarm_secrets(raw: dict[str, Any], stored: dict[str, Any]) -> dict[str, Any]:
+    import copy
+
+    out = copy.deepcopy(raw)
+    for a, b, c in _ALARM_SECRETS:
+        node = (out.get(a) or {}).get(b)
+        if isinstance(node, dict) and node.get(c) == _SECRET_MASK:
+            node[c] = ((stored.get(a) or {}).get(b) or {}).get(c, "")
+    return out
+
+
+def _security_headers(index_html: Path) -> dict[str, str]:
+    """Browser hardening for every response. The UI's one inline script (theme before first paint) is
+    allowed by its hash, read from the built index.html, so no other inline script can run (XSS)."""
+    import base64
+    import hashlib
+
+    hashes = []
+    try:
+        for body in re.findall(r"<script>(.*?)</script>", index_html.read_text(encoding="utf-8"), re.S):
+            hashes.append("'sha256-%s'" % base64.b64encode(hashlib.sha256(body.encode()).digest()).decode())
+    except OSError:  # no built UI (API only / tests)
+        pass
+    csp = "; ".join([
+        "default-src 'self'",
+        "script-src 'self' " + " ".join(hashes),
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",  # React style attributes
+        "font-src 'self' https://fonts.gstatic.com",
+        "img-src 'self' data: blob:",  # evidence images arrive as data: / blob: URLs
+        "connect-src 'self'",  # API + live WebSocket on the same host
+        "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'none'",
+    ])
+    return {
+        "Content-Security-Policy": csp,
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    }
+
+
 def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, config_path: str | Path | None = None,
                auth_settings: AuthSettings | None = None) -> FastAPI:
     cfg_path = Path(config_path).resolve() if config_path else default_config_path()
@@ -243,6 +300,15 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
 
     app = FastAPI(title="PPE Compliance Monitor", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=cfg.server.cors_origins, allow_methods=["*"], allow_headers=["*"])
+    security_headers = _security_headers(Path(cfg.server.static_dir) / "index.html")
+
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next: Callable[[Request], Any]) -> Response:
+        response = await call_next(request)
+        for k, v in security_headers.items():
+            response.headers.setdefault(k, v)
+        return response
+
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
     app.state.monitor = monitor
     app.state.config_store = cfg_store
@@ -319,7 +385,10 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
                 live = monitor.get(stream_id)
                 if live is not w:  # the stream was restarted by a config reload
                     return
-                seq, jpg = w.jpeg()
+                if w.out_seq == last:
+                    await asyncio.sleep(0.02)
+                    continue
+                seq, jpg = await asyncio.to_thread(w.jpeg)  # encodes: off the event loop
                 if jpg is not None and seq != last:
                     last = seq
                     yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
@@ -339,9 +408,13 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
     cfg_view = [Depends(require("config:view"))]
     cfg_system = require("config:system")
 
-    @app.get("/api/config", dependencies=cfg_view)
-    def get_config() -> dict[str, Any]:
-        return cfg_store.read()
+    @app.get("/api/config")
+    def get_config(user: User = Depends(require("config:view"))) -> dict[str, Any]:
+        doc = cfg_store.read()
+        if "config:system" not in user.permissions:  # Admins see camera settings, never alarm credentials
+            doc["config"] = _mask_alarm_secrets(doc["config"])
+            doc["yaml"] = yaml.safe_dump(doc["config"], sort_keys=False, allow_unicode=True)
+        return doc
 
     @app.get("/api/config/schema", dependencies=cfg_view)
     def config_schema() -> dict[str, Any]:
@@ -408,6 +481,8 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
             if body.yaml is not None:
                 raise ApiError(403, "Editing the raw YAML requires the Super Admin role. Use the form view to change "
                                     "camera settings.", "forbidden")
+            if body.config is not None:  # the masked alarm credentials they were shown mean "unchanged"
+                body.config = _unmask_alarm_secrets(body.config, before_raw)
             denied = admin_denied_changes(before_raw, body.config or {})
             if denied:
                 shown = ", ".join(denied[:8]) + (f" and {len(denied) - 8} more" if len(denied) > 8 else "")
@@ -509,7 +584,8 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
     def export_dataset(request: Request, start: float | None = None, end: float | None = None,
                        camera: str | None = None, ppe: str | None = None, review: str | None = None,
                        limit: int = Query(500, ge=1, le=2000),
-                       user: User = Depends(require("violations:view", "violations:export"))) -> Response:
+                       # up to 2000 full-resolution worker photos: personal data, Super Admin only
+                       user: User = Depends(require("violations:view", "violations:export_images"))) -> Response:
         """Reviewed violations as a YOLO-layout zip (clean frames + person pre-labels + verdicts) for retraining."""
         import tempfile
 
@@ -604,7 +680,7 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
         hub.clients.add(websocket)
         hub.expires[websocket] = exp
         hub.tokens[websocket] = token
-        subs: dict[str, float] = {}  # stream id -> max fps this client wants (only tiles on screen)
+        subs: dict[str, tuple[float, int]] = {}  # stream id -> (max fps, max width) this client wants (tiles on screen)
         video = asyncio.create_task(_video_sender(websocket, subs))
         try:
             while True:
@@ -614,10 +690,11 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
                     continue
                 if isinstance(msg, dict) and msg.get("type") == "subscribe" and isinstance(msg.get("streams"), dict):
                     subs.clear()
-                    for sid, fps in list(msg["streams"].items())[:64]:
-                        try:
-                            subs[str(sid)] = min(30.0, max(0.5, float(fps)))
-                        except (TypeError, ValueError):
+                    for sid, want in list(msg["streams"].items())[:64]:
+                        try:  # a number (fps, full size) or {"fps": n, "w": px} - a small tile needs a small JPEG
+                            fps, width = (want.get("fps", 8), want.get("w", 0)) if isinstance(want, dict) else (want, 0)
+                            subs[str(sid)] = (min(30.0, max(0.5, float(fps))), max(0, int(width or 0)))
+                        except (TypeError, ValueError, AttributeError):
                             continue
         except WebSocketDisconnect:
             pass
@@ -625,7 +702,7 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
             video.cancel()
             hub.forget(websocket)
 
-    async def _video_sender(websocket: WebSocket, subs: dict[str, float]) -> None:
+    async def _video_sender(websocket: WebSocket, subs: dict[str, tuple[float, int]]) -> None:
         """Push each subscribed camera's newest JPEG as a binary message, at most `fps` per camera.
 
         One socket carries every tile, so the browser's ~6-connections-per-host HTTP/1.1 limit (which
@@ -638,13 +715,13 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
             while True:
                 now = time.monotonic()
                 sent = False
-                for sid, fps in list(subs.items()):
+                for sid, (fps, width) in list(subs.items()):
                     if due.get(sid, 0.0) > now:
                         continue
                     w = monitor.get(sid)
-                    if w is None:
+                    if w is None or w.out_seq == last.get(sid):
                         continue
-                    seq, jpg = w.jpeg()
+                    seq, jpg = await asyncio.to_thread(w.jpeg, width)  # draws + encodes once per frame and size, off the loop
                     if jpg is None or seq == last.get(sid):
                         continue
                     ident = sid.encode()[:255]
@@ -661,7 +738,7 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
             return
 
     # ------------------------------------------------------------ built frontend (docker / prod)
-    static = Path(cfg.server.static_dir)
+    static = Path(cfg.server.static_dir).resolve()
     if static.is_dir() and (static / "index.html").exists():
         app.mount("/assets", StaticFiles(directory=static / "assets"), name="assets")
 
@@ -669,7 +746,8 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
         def spa(path: str) -> FileResponse:
             if path.startswith("api/"):
                 raise HTTPException(404, "not found")
-            f = static / path
-            return FileResponse(f if path and f.is_file() else static / "index.html")
+            # the server decodes %2e%2e%2f to "../" before routing: only files inside the build folder
+            f = (static / path).resolve()
+            return FileResponse(f if path and f.is_relative_to(static) and f.is_file() else static / "index.html")
 
     return app

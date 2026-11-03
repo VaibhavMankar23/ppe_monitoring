@@ -26,6 +26,12 @@ export function isTyping(target: EventTarget | null): boolean {
 /** Shortcuts are off while a dialog is open. `expected` = dialogs that host the shortcut target itself. */
 export const dialogOpen = (expected = 0) => document.querySelectorAll('[role="dialog"]').length > expected;
 
+/** Is the full-screen review the top-most dialog? (then only it reacts to J / K / V / F) */
+export const focusOnTop = () => {
+  const d = document.querySelectorAll('[role="dialog"]');
+  return d.length > 0 && d[d.length - 1].hasAttribute("data-review-focus");
+};
+
 export function b64ToBlob(b64: string, type = "image/jpeg"): Blob {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);

@@ -3,7 +3,7 @@ import { api, jpegDataUrl, saveBlob } from "../../lib/api";
 import { fmtDateTime, fmtDuration, fmtPct, fmtTime, ppeLabel, violationLabel } from "../../lib/format";
 import type { Verdict, Violation, ViolationMeta } from "../../types";
 import { Button, Chip, ConfirmDialog, cx, Icon, Input, Kbd, Notice, Segmented, Skeleton, Spinner, Tag, useToast } from "../ui";
-import { b64ToBlob, dialogOpen, isTyping, VERDICT_LABEL, type Reason, type ReviewPatch } from "./shared";
+import { b64ToBlob, dialogOpen, focusOnTop, isTyping, VERDICT_LABEL, type Reason, type ReviewPatch } from "./shared";
 
 type Tab = "evidence" | "crop" | "original";
 const TAB_LABEL: Record<Tab, string> = { evidence: "Evidence", crop: "Person crop", original: "Original frame" };
@@ -102,6 +102,10 @@ interface Props {
   canDelete: boolean;
   /** rendered inside the mobile drawer (which is itself a dialog) */
   inDrawer?: boolean;
+  /** shown in the full-screen review mode (evidence fills the screen, details beside it) */
+  fullscreen?: boolean;
+  /** open the full-screen review mode (button, or a click on the image) */
+  onFullscreen?: () => void;
   onReviewed: (id: number, patch: ReviewPatch) => void;
   onDeleted: (id: number) => void;
 }
@@ -110,12 +114,14 @@ interface Props {
  * One violation: evidence viewer, verdict bar and provenance. Mount with `key={id}` so every
  * piece of per-violation state (tab, reason picker, lazy images) resets on selection.
  */
-export function ViolationDetail({ id, item, reasons, canReview, canDelete, inDrawer = false, onReviewed, onDeleted }: Props) {
+export function ViolationDetail({ id, item, reasons, canReview, canDelete, inDrawer = false, fullscreen = false, onFullscreen, onReviewed, onDeleted }: Props) {
   const toast = useToast();
   const [full, setFull] = useState<Violation | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [tab, setTab] = useState<Tab>("evidence");
+  const [actual, setActual] = useState(false); // full screen: actual pixel size (pan by scrolling) instead of fit
+  useEffect(() => setActual(false), [tab]);
   const [extra, setExtra] = useState<Partial<Record<"crop" | "original", string>>>({});
   const [extraError, setExtraError] = useState<string | null>(null);
   const [extraAttempt, setExtraAttempt] = useState(0);
@@ -209,7 +215,7 @@ export function ViolationDetail({ id, item, reasons, canReview, canDelete, inDra
   const onKey = useRef<(e: KeyboardEvent) => void>(() => {});
   onKey.current = (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey || !canReview || !v || review || busy) return;
-    if (dialogOpen(inDrawer ? 1 : 0)) return;
+    if (fullscreen ? !focusOnTop() : dialogOpen(inDrawer ? 1 : 0)) return; // only the top-most view reacts
     if (e.key === "Escape" && picker) {
       setPicker(false);
       (document.activeElement as HTMLElement | null)?.blur?.();
@@ -252,9 +258,7 @@ export function ViolationDetail({ id, item, reasons, canReview, canDelete, inDra
   const reasonLabel = (rid: string | null) => (rid ? reasons.find((r) => r.id === rid)?.label ?? rid.replace(/_/g, " ") : null);
   const ongoing = v.state === "ongoing";
 
-  const body = (
-    <>
-      {!inDrawer && (
+  const head = (
         <header className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line px-4 py-2.5">
           <h2 className="min-w-0 truncate text-sm font-semibold">{v.stream_name}</h2>
           <time className="num text-[13px] text-ink-2">{fmtDateTime(v.timestamp)}</time>
@@ -263,19 +267,33 @@ export function ViolationDetail({ id, item, reasons, canReview, canDelete, inDra
             {ongoing && <Tag tone="accent">Ongoing</Tag>}
           </span>
         </header>
-      )}
+  );
 
-      {/* ---- evidence viewer */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-2">
+  const viewerBar = (
+    <div className={cx("flex flex-wrap items-center justify-between gap-2 px-4 py-2", fullscreen ? "border-b border-stage-line bg-stage" : "border-b border-line")}>
         <Segmented<Tab> size="sm" label="Evidence image" value={tab}
           onChange={(t) => available[t] && setTab(t)}
           options={(Object.keys(TAB_LABEL) as Tab[]).map((t) => ({
             value: t,
             label: available[t] ? TAB_LABEL[t] : <span aria-disabled="true" className="cursor-not-allowed opacity-40" title="Not stored for this violation">{TAB_LABEL[t]}</span>,
           }))} />
-        <Button size="sm" variant="ghost" icon="download" disabled={!shown || !!purgedAt} onClick={downloadShown}>Download image</Button>
-      </div>
-      <div className="relative flex h-[min(36vh,500px)] min-h-56 items-center justify-center overflow-hidden bg-stage">
+      <span className="flex items-center gap-1">
+        {fullscreen && shown && !purgedAt && (
+          <Button size="sm" variant="ghost" icon="search" onClick={() => setActual((a) => !a)} className={fullscreen ? "text-stage-ink hover:bg-white/10" : undefined}>
+            {actual ? "Fit to screen" : "Actual size"}
+          </Button>
+        )}
+        <Button size="sm" variant="ghost" icon="download" disabled={!shown || !!purgedAt} onClick={downloadShown}
+          className={fullscreen ? "text-stage-ink hover:bg-white/10" : undefined}>Download image</Button>
+        {onFullscreen && !fullscreen && (
+          <Button size="sm" variant="ghost" icon="expand" onClick={onFullscreen} title="Full screen (Z)">Full screen</Button>
+        )}
+      </span>
+    </div>
+  );
+
+  const stage = (cls: string) => (
+    <div className={cx("relative flex bg-stage", actual ? "scroll-thin items-start justify-start overflow-auto" : "items-center justify-center overflow-hidden", cls)}>
         {purgedAt ? (
           <div className="max-w-sm px-6 text-center">
             <Icon name="eyeOff" size={24} className="mx-auto text-stage-ink-2" />
@@ -286,7 +304,9 @@ export function ViolationDetail({ id, item, reasons, canReview, canDelete, inDra
           </div>
         ) : shown ? (
           <img src={jpegDataUrl(shown)} alt={`${TAB_LABEL[tab]} for the violation on ${v.stream_name} at ${fmtTime(v.timestamp)}`}
-            className="max-h-full max-w-full object-contain" />
+            onClick={fullscreen ? () => setActual((a) => !a) : onFullscreen}
+            title={fullscreen ? (actual ? "Click to fit the screen" : "Click for actual size") : onFullscreen ? "Click to view full screen" : undefined}
+            className={cx(actual ? "max-w-none" : "max-h-full max-w-full object-contain", fullscreen ? (actual ? "cursor-zoom-out" : "cursor-zoom-in") : onFullscreen && "cursor-zoom-in")} />
         ) : (tab === "evidence" ? loadError : extraError) ? (
           <div className="max-w-sm px-6 text-center">
             <p className="text-sm font-medium text-stage-ink">Couldn't load the image</p>
@@ -305,10 +325,11 @@ export function ViolationDetail({ id, item, reasons, canReview, canDelete, inDra
           </>
         )}
         {!purgedAt && shown && <span className="pointer-events-none absolute bottom-2 left-3 rounded bg-stage/80 px-1.5 py-0.5 text-xs text-stage-ink-2">{TAB_CAPTION[tab]}</span>}
-      </div>
+    </div>
+  );
 
-      {/* ---- verdict bar */}
-      <div className="border-b border-line px-4 py-3">
+  const verdict = (
+    <div className={cx("border-line bg-surface px-4 py-3", fullscreen ? "border-b" : "sticky bottom-0 z-10 border-y")}>
         {review ? (
           <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
             <div className="min-w-0 text-[13px]">
@@ -343,7 +364,7 @@ export function ViolationDetail({ id, item, reasons, canReview, canDelete, inDra
               </Button>
             </div>
             {picker && (
-              <form onSubmit={saveFalseAlarm} className="animate-rise mt-3 rounded-md border border-line bg-canvas p-3">
+              <form onSubmit={saveFalseAlarm} data-own-escape className="animate-rise mt-3 rounded-md border border-line bg-canvas p-3">
                 <div className="text-[13px] font-medium text-ink" id={`why-${id}`}>Why was this a false alarm?</div>
                 <div role="group" aria-labelledby={`why-${id}`} className="mt-2 flex flex-wrap gap-1.5">
                   {reasons.map((r, i) => (
@@ -364,8 +385,109 @@ export function ViolationDetail({ id, item, reasons, canReview, canDelete, inDra
             )}
           </>
         )}
-      </div>
+    </div>
+  );
 
+  if (fullscreen) {
+    // full screen: the evidence fills the screen; verdict and details sit beside it
+    return (
+      <div className="grid h-full min-h-0 grid-cols-1 grid-rows-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(0,1fr)_400px] lg:grid-rows-1">
+        <div className="flex min-h-0 flex-col bg-stage">
+          {viewerBar}
+          {stage("min-h-0 flex-1")}
+        </div>
+        <aside className="scroll-thin flex max-h-[45dvh] min-h-0 flex-col overflow-y-auto border-t border-line bg-surface lg:max-h-none lg:border-t-0 lg:border-l">
+          {head}
+          {verdict}
+      <dl>
+        <Row label="Camera">
+          {v.stream_name}
+          {meta?.camera?.source_type && <span className="text-ink-3"> · {meta.camera.source_type}</span>}
+        </Row>
+        <Row label="Detected"><span className="num">{fmtDateTime(v.timestamp)}</span></Row>
+        <Row label="Duration">
+          <span className="num">{fmtDuration(v.duration ?? Math.max(0, (v.last_seen ?? v.timestamp) - v.timestamp))}</span>
+          {v.observations !== undefined && <span className="text-ink-3"> · <span className="num">{v.observations}</span> observation{v.observations === 1 ? "" : "s"}</span>}
+          {ongoing && <Tag tone="accent" className="ml-2">Ongoing</Tag>}
+        </Row>
+        <Row label="Track"><span className="num">#{v.track_id}</span></Row>
+        {det?.zone && <Row label="Zone">{det.zone}</Row>}
+        <Row label="Flagged">
+          {det?.items && Object.keys(det.items).length ? (
+            <ul className="space-y-1">
+              {Object.entries(det.items).map(([k, it]) => (
+                <li key={k} className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="font-medium">{violationLabel(k)}</span>
+                  <span className="text-ink-3">
+                    {it.confidence != null
+                      ? <><span className="num text-ink-2">{fmtPct(it.confidence, 0)}</span> confidence{/zone/i.test(it.evidence ?? "") ? ` · ${it.evidence}` : ""}</>
+                      : /zone/i.test(it.evidence ?? "") ? it.evidence : "not seen (required item absent)"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <span className="flex flex-wrap gap-1">{v.missing.map((m) => <Tag key={m} tone="bad">{violationLabel(m)}</Tag>)}</span>
+          )}
+        </Row>
+        {(personConf != null || v.confidence != null) && (
+          <Row label={personConf != null ? "Person confidence" : "Confidence"}>
+            <span className="num">{fmtPct(personConf ?? v.confidence, 0)}</span>
+            {det?.box_verified_at_full_res && <span className="text-ink-3"> · re-checked at full resolution</span>}
+          </Row>
+        )}
+        <Row label="Lifecycle">
+          <ol className="space-y-1">
+            <li><span className="inline-block w-24 text-ink-3">Detected</span><span className="num">{fmtTime(life?.detected_at ?? v.timestamp)}</span></li>
+            {life?.confirmed_at != null && <li><span className="inline-block w-24 text-ink-3">Confirmed</span><span className="num">{fmtTime(life.confirmed_at)}</span></li>}
+            {v.last_seen != null && (
+              <li>
+                <span className="inline-block w-24 text-ink-3">Last seen</span><span className="num">{fmtTime(v.last_seen)}</span>
+                {ongoing && <span className="text-ink-3"> · still in view</span>}
+              </li>
+            )}
+            <li>
+              <span className="inline-block w-24 text-ink-3">Acknowledged</span>
+              {v.acknowledged_at != null
+                ? <><span className="num">{fmtDateTime(v.acknowledged_at)}</span>{v.acknowledged_by && <span className="text-ink-3"> by {v.acknowledged_by}</span>}</>
+                : <span className="text-ink-3">not yet</span>}
+            </li>
+          </ol>
+        </Row>
+      </dl>
+      {meta ? <Provenance meta={meta} /> : full && (
+        <p className="border-t border-line px-4 py-2.5 text-xs text-ink-3">Recorded before detection provenance was kept, so model and threshold details are not available.</p>
+      )}
+      {loadError && full === null && (
+        <div className="border-t border-line p-4">
+          <Notice tone="warn" title="Showing the list entry only" action={<Button size="sm" onClick={() => setAttempt((n) => n + 1)}>Retry</Button>}>
+            The full record could not be loaded: {loadError}
+          </Notice>
+        </div>
+      )}
+      {canDelete && (
+        <div className="border-t border-line px-4 py-3">
+          <Button variant="ghost" size="sm" icon="trash" className="text-bad hover:text-bad" onClick={() => setConfirmDelete(true)}>Delete violation</Button>
+        </div>
+      )}
+      <ConfirmDialog open={confirmDelete} onClose={() => !deleting && setConfirmDelete(false)} onConfirm={() => void remove()}
+        title="Delete this violation?" confirmLabel="Delete violation" danger busy={deleting}>
+        The record from {v.stream_name} at <span className="num">{fmtDateTime(v.timestamp)}</span>, its evidence images and any verdict are removed
+        permanently. It will no longer count in analytics or dataset exports.
+      </ConfirmDialog>
+        </aside>
+      </div>
+    );
+  }
+
+  const body = (
+    <>
+      {!inDrawer && head}
+      {/* ---- evidence viewer */}
+      {viewerBar}
+      {stage("h-[min(48vh,600px)] min-h-64")}
+      {/* ---- verdict bar: sticks to the bottom while the evidence fills the pane, so a verdict is always one click away */}
+      {verdict}
       {/* ---- details */}
       <dl>
         <Row label="Camera">

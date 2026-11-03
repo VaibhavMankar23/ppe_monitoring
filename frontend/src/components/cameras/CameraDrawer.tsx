@@ -7,7 +7,7 @@ import { ppeLabel } from "../../lib/format";
 import { useAuth } from "../../state/auth";
 import type { ConfigDoc, ConfigSchema, FieldError, Priority, RawConfig, StreamInfo, Zone } from "../../types";
 import { errorMessage, fieldErrors, isConflict, toastSaved } from "../settings/shared";
-import { Button, Chip, ConfirmDialog, Drawer, Field, Icon, Input, Notice, Segmented, StatusDot, Switch, Tag, useToast } from "../ui";
+import { Button, Chip, ConfirmDialog, cx, Drawer, Field, Icon, Input, Notice, Segmented, StatusDot, Switch, Tag, useToast } from "../ui";
 import { PASSWORD_MASK, SourceForm } from "./SourceForm";
 import { streamStatus } from "./status";
 import { ZoneEditor, zoneProblems } from "./ZoneEditor";
@@ -261,13 +261,14 @@ export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, onClos
           <div className="p-4"><Notice tone="warn" title="This camera is no longer in the configuration">Someone removed it while this editor was open. Your changes to it cannot be saved.</Notice></div>
         ) : (
           <div className="flex flex-col gap-4 p-4">
-            <div className="flex flex-wrap items-center gap-3">
+            {/* a new camera is one short page (name, source, PPE); the tabs and the rest come when editing it */}
+            {!isNew && <div className="flex flex-wrap items-center gap-3">
               <Segmented label="Camera settings" value={tab} onChange={setTab}
                 options={(Object.keys(TAB_LABEL) as CameraTab[]).map((t) => ({
                   value: t, count: t === "zones" ? zones.length : undefined,
                   label: <>{TAB_LABEL[t]}{tabErrors(t) > 0 && <span className="flex items-center gap-1 text-bad"><Icon name="alert" size={12} /><span className="sr-only">has problems</span></span>}</>,
                 }))} />
-            </div>
+            </div>}
 
             {!canCameras ? <Notice tone="warn">Your role can look at cameras but not change them.</Notice>
               : !canSystem && isNew ? <Notice tone="warn">Adding a camera needs a Super Admin.</Notice>
@@ -293,27 +294,39 @@ export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, onClos
               </Notice>
             )}
 
-            {tab === "rules" && (
+            {(tab === "rules" || isNew) && (
               <div className="flex flex-col gap-5">
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div className={cx("grid gap-4", !isNew && "sm:grid-cols-2")}>
                   <Field label="Name" error={errMap.name} hint="Shown on the live wall, in alerts and in reports.">
                     {(id) => <Input id={id} value={draft.name ?? ""} maxLength={64} disabled={!editable("name")} invalid={!!errMap.name} placeholder="Gate 2, loading bay"
                       onChange={(e) => setName(e.target.value)} />}
                   </Field>
-                  <Field label="Camera ID" error={errMap.id}
-                    hint={isNew ? "Derived from the name. It cannot be changed after the first save: violation history is filed under it." : "Fixed. Violation history is filed under it."}>
-                    {(id) => <Input id={id} className="num" value={draft.id ?? ""} maxLength={32} disabled={!isNew || !editable("id")} invalid={!!errMap.id} spellCheck={false}
-                      onChange={(e) => { setIdEdited(true); set("id", e.target.value); }} />}
-                  </Field>
+                  {!isNew && (
+                    <Field label="Camera ID" error={errMap.id} hint="Fixed. Violation history is filed under it.">
+                      {(id) => <Input id={id} className="num" value={draft.id ?? ""} maxLength={32} disabled invalid={!!errMap.id} spellCheck={false}
+                        onChange={(e) => { setIdEdited(true); set("id", e.target.value); }} />}
+                    </Field>
+                  )}
                 </div>
 
-                <Switch checked={draft.enabled !== false} disabled={!editable("enabled")} onChange={(v) => setOptional("enabled", v, true)} label="Enabled"
-                  hint="Runs whenever the server runs. Off keeps the camera and its history, but nothing is watched." />
+                {isNew && (
+                  <div>
+                    <div className="mb-2 text-[13px] font-semibold">Video source</div>
+                    <SourceForm essential source={draft.source ?? {}} onChange={(s) => { set("source", s); setErrors((es) => es.filter((e) => !e.loc.startsWith("source"))); }}
+                      hasStoredPassword={false} disabled={!editable("source")} canUpload={canSystem} schema={schema} errors={sourceErrors} />
+                  </div>
+                )}
+
+                {!isNew && (
+                  <Switch checked={draft.enabled !== false} disabled={!editable("enabled")} onChange={(v) => setOptional("enabled", v, true)} label="Enabled"
+                    hint="Runs whenever the server runs. Off keeps the camera and its history, but nothing is watched." />
+                )}
 
                 <div>
                   <div className="mb-1.5 text-[13px] font-medium" id="cam-ppe">Required PPE</div>
                   <div className="flex flex-wrap gap-1.5" role="group" aria-labelledby="cam-ppe">
-                    {schema.ppe_items.map((item) => {
+                    {/* a new camera offers only what the model can check; editing shows everything, flagged */}
+                    {(isNew ? schema.ppe_items.filter((item) => isChecked(item, caps)) : schema.ppe_items).map((item) => {
                       const on = ppe.includes(item);
                       return (
                         <Chip key={item} selected={on} disabled={!editable("required_ppe")}
@@ -344,6 +357,7 @@ export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, onClos
                   )}
                 </div>
 
+                {!isNew && <>
                 <div>
                   <div className="mb-1.5 text-[13px] font-medium">Detection confidence</div>
                   <Switch checked={conf === null} disabled={!editable("confidence")}
@@ -377,16 +391,17 @@ export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, onClos
                     hint="Raises a “Phone use” violation when a worker holds a phone to their hands or face. It runs a second model on this camera, which adds load." />
                   {phoneIssue && <Notice tone="warn" className="mt-2" title="Phone use is not being checked">{phoneIssue}</Notice>}
                 </div>
+                </>}
               </div>
             )}
 
-            {tab === "source" && (
+            {tab === "source" && !isNew && (
               <SourceForm source={draft.source ?? {}} onChange={(s) => { set("source", s); setErrors((es) => es.filter((e) => !e.loc.startsWith("source"))); }}
                 hasStoredPassword={saved?.source?.password === PASSWORD_MASK} streamId={isNew ? undefined : String(cameraId)}
                 disabled={!editable("source")} canUpload={canSystem} schema={schema} errors={sourceErrors} />
             )}
 
-            {tab === "zones" && (
+            {tab === "zones" && !isNew && (
               <ZoneEditor zones={zones} disabled={!editable("zones")} streamId={isNew ? undefined : String(cameraId)} stream={stream} source={draft.source}
                 errors={zoneErrors}
                 onChange={(z) => { setOptional("zones", z, []); setErrors((es) => es.filter((e) => !e.loc.startsWith("zones"))); }} />

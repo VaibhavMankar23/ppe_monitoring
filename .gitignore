@@ -14,4 +14,15 @@ backend/data/
 data/
 config/
 backend/config.backup.*.yaml
+# local dev config (plant camera list); installs start from backend/config.default.yaml
+backend/config.yaml
 datasets/
+
+# TLS certificates for the reverse proxy
+deploy/certs/*.pem
+deploy/certs/*.key
+# local database backups contain worker photos
+backend/data/*.backup-*.db
+
+# TypeScript incremental build cache
+*.tsbuildinfo

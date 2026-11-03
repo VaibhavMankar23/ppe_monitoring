@@ -144,6 +144,20 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii") if data else ""
 
 
+def _cell(v: Any) -> Any:
+    """Spreadsheet-safe CSV cell: text starting with = + - @ (a camera name, a reviewer note) would run
+    as a formula in Excel, so it is prefixed with an apostrophe. Numbers are left alone."""
+    return "'" + v if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+
+
+class _SafeWriter:
+    def __init__(self, buf: io.StringIO) -> None:
+        self._w = csv.writer(buf)
+
+    def writerow(self, row: list[Any]) -> None:
+        self._w.writerow([_cell(v) for v in row])
+
+
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -456,7 +470,7 @@ class ViolationStore:
 
     def export_csv(self, f: ViolationFilter) -> str:
         buf = io.StringIO()
-        w = csv.writer(buf)
+        w = _SafeWriter(buf)
         # the first nine columns are unchanged from earlier versions; event / provenance columns follow
         w.writerow(["id", "timestamp_utc", "local_time", "camera_id", "camera_name", "track_id", "missing_ppe",
                     "acknowledged_at_utc", "acknowledged_by", "last_seen_utc", "duration_s", "observations",
@@ -486,7 +500,7 @@ class ViolationStore:
             .where(ViolationRow.original.is_not(None)).order_by(ViolationRow.ts.desc(), ViolationRow.id.desc()) \
             .limit(max(1, min(limit, 2000)))
         man = io.StringIO()
-        mw = csv.writer(man)
+        mw = _SafeWriter(man)
         mw.writerow(["image", "violation_id", "timestamp_utc", "camera_id", "flagged_as_missing", "confidence",
                      "review", "review_reason", "review_note", "person_box_xyxy_px", "frame_w", "frame_h"])
         n = 0

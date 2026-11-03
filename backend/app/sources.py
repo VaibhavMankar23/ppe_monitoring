@@ -87,6 +87,16 @@ class StreamSource:
     def read(self) -> np.ndarray | None:
         raise NotImplementedError
 
+    # Two-step read for sources that can decode without converting the picture (see FrameGrabber):
+    # grab() advances one frame, retrieve() returns it. The default just buffers read().
+    def grab(self) -> bool:
+        self._grabbed = self.read()
+        return self._grabbed is not None
+
+    def retrieve(self) -> np.ndarray | None:
+        img, self._grabbed = getattr(self, "_grabbed", None), None
+        return img
+
     def close(self) -> None:
         pass
 
@@ -136,6 +146,17 @@ class _OpenCVSource(StreamSource):
         ok, img = self._cap.read()
         return img if ok and img is not None else None
 
+    # grab() still decodes (H.264/H.265 frames depend on each other), but skips the colour
+    # conversion; frames nobody will analyse never pay for retrieve() or the resize after it.
+    def grab(self) -> bool:
+        return self._cap is not None and self._cap.grab()
+
+    def retrieve(self) -> np.ndarray | None:
+        if self._cap is None:
+            return None
+        ok, img = self._cap.retrieve()
+        return img if ok and img is not None else None
+
     def close(self) -> None:
         if self._cap is not None:
             self._cap.release()
@@ -156,6 +177,17 @@ class FileStreamSource(_OpenCVSource):
 
     def _open_error(self) -> str:
         return f"cannot decode {self.describe()} (unsupported codec or damaged file)"
+
+    MAX_BAD_FRAMES = 50  # unreadable frames in a row before a recording counts as ended
+
+    def grab(self) -> bool:
+        # NVR exports carry the odd corrupt H.265 frame ("PPS id out of range"), each reported as a
+        # failed read. Taking the first one for end-of-file restarted the clip there, so a one-hour
+        # export replayed its first minute forever. Skip them; only a run of failures is the real end.
+        for _ in range(self.MAX_BAD_FRAMES):
+            if super().grab():
+                return True
+        return False
 
 
 class _NetworkCapture(_OpenCVSource):
@@ -432,6 +464,8 @@ def probe(cfg: SourceConfig, max_width: int = 960, timeout: float | None = None)
 
 # ====================================================================== capture thread
 class FrameGrabber:
+    REFRESH_S = 0.2  # an untaken frame is replaced at most this often: bounds staleness, not CPU
+
     def __init__(self, stream_id: str, cfg: SourceConfig, max_width: int = 960,
                  source_factory: Callable[[SourceConfig, int], StreamSource] = make_source, decode_threads: int = 1) -> None:
         self.stream_id = stream_id
@@ -555,20 +589,30 @@ class FrameGrabber:
         fps_count, fps_t0 = 0, time.monotonic()
         frames = 0
         while not self._stop.is_set():
-            img = src.read()
-            if img is None:
+            if not src.grab():
                 return frames
             frames += 1
-            small = self._resize(img)
             now = time.monotonic()
-            with self._lock:
-                if self._latest is not None and self._latest.seq > self._taken_seq:
-                    self.frames_dropped += 1
-                self._seq += 1
-                self._latest = Frame(small, self._seq, now, None if small is img else img)
-            self.frames_captured += 1
-            self._last_live = now
-            self.state, self.frame_size, self.message = "live", (small.shape[1], small.shape[0]), ""
+            latest = self._latest
+            # Convert + resize only when the pipeline has consumed the held frame, or it is getting
+            # stale; otherwise this frame is skipped like any overwritten one (counted as dropped).
+            if latest is not None and latest.seq > self._taken_seq and now - latest.ts < self.REFRESH_S:
+                self.frames_dropped += 1
+                self.frames_captured += 1
+                self._last_live = now
+            else:
+                img = src.retrieve()
+                if img is None:
+                    return frames
+                small = self._resize(img)
+                with self._lock:
+                    if self._latest is not None and self._latest.seq > self._taken_seq:
+                        self.frames_dropped += 1
+                    self._seq += 1
+                    self._latest = Frame(small, self._seq, now, None if small is img else img)
+                self.frames_captured += 1
+                self._last_live = now
+                self.state, self.frame_size, self.message = "live", (small.shape[1], small.shape[0]), ""
 
             fps_count += 1
             if now - fps_t0 >= 1.0:

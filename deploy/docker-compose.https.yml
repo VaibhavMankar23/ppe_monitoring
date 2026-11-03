@@ -1,0 +1,36 @@
+# Production override: HTTPS reverse proxy in front of the app.
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.https.yml up -d --build
+#
+# The app port is no longer published: only Caddy (80/443) is reachable from the plant network,
+# so passwords, tokens and worker photos never cross the LAN unencrypted. See docs/DEPLOYMENT.md.
+services:
+  ppe-monitor:
+    ports: !reset []              # needs Docker Compose >= 2.24
+    expose:
+      - "8000"
+    environment:
+      PPE_COOKIE_SECURE: "true"   # sign-in cookie only over https
+      # the app sees the user's real IP (lockouts, audit trail) from Caddy's X-Forwarded-For;
+      # safe because port 8000 is reachable only from the compose network
+      PPE_TRUSTED_PROXIES: "*"
+
+  caddy:
+    image: caddy:2.8.4
+    restart: unless-stopped
+    depends_on:
+      - ppe-monitor
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PPE_DOMAIN: ${PPE_DOMAIN:-ppe.plant.local}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/certs:/certs:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
