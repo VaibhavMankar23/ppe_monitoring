@@ -341,7 +341,7 @@ delete `models/safesight/*.engine` and `models/safesight/*_openvino_model/`, the
 |---|---|
 | `set PPE_JWT_SECRET in .env` on `docker compose up` | `.env` missing or `PPE_JWT_SECRET` empty (step 3.1) |
 | `env_file ... required` error | Docker Compose older than v2.24: upgrade it |
-| Container exits with `Permission denied` on `/app/config` or `/app/data` | Folders not owned by `PPE_UID:PPE_GID`: `sudo chown -R 1000:1000 config data videos models` |
+| Container restarts with `Permission denied` on `/app/config` or `/app/data` | Folders not owned by `PPE_UID:PPE_GID`: `sudo chown -R 1000:1000 config data videos models`. If you changed `PPE_UID`/`PPE_GID` after the first build, rebuild: `docker compose up -d --build` |
 | Log says `intel:cpu` on the GPU server | NVIDIA block not uncommented, image not built with `TORCH_INDEX=cu124`, or Container Toolkit missing (3.3). Rebuild with `docker compose up -d --build` |
 | Log says `model best.pt on cuda:0` (no `.engine`) | TensorRT build failed: read the log lines above. Works, 2-3x slower |
 | `TensorRT engine ... failed to load` | Engine built for another GPU/TensorRT: `rm models/safesight/*.engine`, restart |
