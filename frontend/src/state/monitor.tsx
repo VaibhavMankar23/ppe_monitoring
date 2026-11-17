@@ -20,7 +20,7 @@ interface MonitorCtx {
   /** an ongoing violation event was extended (duration, observations, newly missing items) or ended */
   onViolationUpdate: (fn: UpdateListener) => () => void;
   /** Receive a camera's video over the shared socket at up to `fps`; returns an unsubscribe function. */
-  subscribeFrames: (streamId: string, fps: number, fn: FrameListener) => () => void;
+  subscribeFrames: (streamId: string, fps: number, fn: FrameListener, width?: number) => () => void;
 }
 
 const Ctx = createContext<MonitorCtx | null>(null);
@@ -43,7 +43,7 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
   const [streams, setStreams] = useState<StreamInfo[]>([]);
   const listeners = useRef(new Set<Listener>());
   const updateListeners = useRef(new Set<UpdateListener>());
-  const frameSubs = useRef(new Map<string, Map<number, { fps: number; fn: FrameListener }>>());
+  const frameSubs = useRef(new Map<string, Map<number, { fps: number; width: number; fn: FrameListener }>>());
   const wsRef = useRef<WebSocket | null>(null);
   const nextToken = useRef(1);
   const pending = useRef(false);
@@ -55,9 +55,12 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
       pending.current = false;
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      const out: Record<string, number> = {};
+      // per camera: the highest rate and the largest picture any viewer of it needs (0 = full size)
+      const out: Record<string, { fps: number; w: number }> = {};
       frameSubs.current.forEach((subs, id) => {
-        if (subs.size) out[id] = Math.max(...[...subs.values()].map((s) => s.fps));
+        if (!subs.size) return;
+        const all = [...subs.values()];
+        out[id] = { fps: Math.max(...all.map((s) => s.fps)), w: all.some((s) => !s.width) ? 0 : Math.max(...all.map((s) => s.width)) };
       });
       ws.send(JSON.stringify({ type: "subscribe", streams: out }));
     });
@@ -176,11 +179,11 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const subscribeFrames = useCallback((streamId: string, fps: number, fn: FrameListener) => {
+  const subscribeFrames = useCallback((streamId: string, fps: number, fn: FrameListener, width = 0) => {
     const token = nextToken.current++;
     let subs = frameSubs.current.get(streamId);
     if (!subs) frameSubs.current.set(streamId, (subs = new Map()));
-    subs.set(token, { fps, fn });
+    subs.set(token, { fps, width, fn });
     sendSubscription();
     return () => {
       subs!.delete(token);

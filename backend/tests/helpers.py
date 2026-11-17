@@ -32,7 +32,8 @@ def raw_config(tmp: Path, n_streams: int = 2) -> dict[str, Any]:
     return {
         "model": {"weights": "w.pt", "device": "cpu"},
         "inference": {"person_refine": False},
-        "alerts": {"db_path": ":memory:", "retention_days": 30},
+        # fixtures use fixed 2026 timestamps: a 30-day retention purged them at startup once they aged out
+        "alerts": {"db_path": ":memory:", "retention_days": 3650},
         "streams": [
             {"id": f"cam{i}", "name": f"Camera {i}",
              "source": {"type": "file", "uri": f"missing_{i}.mp4", "reconnect_delay": 0.2},

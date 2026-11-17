@@ -33,16 +33,20 @@ log = logging.getLogger(__name__)
 REFRESH_COOKIE = "ppe_refresh"
 COOKIE_PATH = "/api/auth"
 
-# brute-force throttle: per (client IP, username)
+# brute-force throttle: per (client IP, username), and per username across all IPs (key ("*", name)).
+# Each further lockout of the same key doubles, up to MAX_LOCKOUT; a successful sign-in resets it.
 MAX_FAILURES = 5
 FAILURE_WINDOW = 300.0
 LOCKOUT_SECONDS = 60.0
+MAX_LOCKOUT = 3600.0
+ACCOUNT_MAX_FAILURES = 20  # from any mix of IPs within FAILURE_WINDOW
 
 
 class LoginThrottle:
     def __init__(self) -> None:
         self._fails: dict[tuple[str, str], list[float]] = {}
         self._locked: dict[tuple[str, str], float] = {}
+        self._strikes: dict[tuple[str, str], int] = {}  # lockouts so far: each one lasts twice as long
         self._lock = threading.Lock()
 
     def retry_after(self, key: tuple[str, str], now: float) -> float:
@@ -50,12 +54,14 @@ class LoginThrottle:
             until = self._locked.get(key, 0.0)
             return max(0.0, until - now)
 
-    def fail(self, key: tuple[str, str], now: float) -> None:
+    def fail(self, key: tuple[str, str], now: float, limit: int = MAX_FAILURES) -> None:
         with self._lock:
             xs = [t for t in self._fails.get(key, []) if now - t < FAILURE_WINDOW] + [now]
             self._fails[key] = xs
-            if len(xs) >= MAX_FAILURES:
-                self._locked[key] = now + LOCKOUT_SECONDS
+            if len(xs) >= limit:
+                strikes = self._strikes.get(key, 0)
+                self._locked[key] = now + min(MAX_LOCKOUT, LOCKOUT_SECONDS * 2 ** strikes)
+                self._strikes[key] = strikes + 1
                 self._fails[key] = []
             if len(self._fails) > 10_000:  # bound memory under a spray attack
                 self._fails.clear()
@@ -64,6 +70,7 @@ class LoginThrottle:
         with self._lock:
             self._fails.pop(key, None)
             self._locked.pop(key, None)
+            self._strikes.pop(key, None)
 
 
 # ------------------------------------------------------------------ bodies
@@ -148,9 +155,9 @@ def build_router() -> APIRouter:
     def login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
         c = ctx(request)
         name = body.username.strip().lower()
-        key = (client_ip(request), name)
+        key, account = (client_ip(request), name), ("*", name)
         now = time.time()
-        wait = throttle.retry_after(key, now)
+        wait = max(throttle.retry_after(key, now), throttle.retry_after(account, now))
         if wait > 0:
             raise ApiError(429, f"Too many failed sign-in attempts. Try again in {int(wait) + 1} s.", "too_many_attempts",
                            headers={"Retry-After": str(int(wait) + 1)})
@@ -162,6 +169,7 @@ def build_router() -> APIRouter:
             ok = verify_password(body.password, u.password_hash)
         if not ok or u is None:
             throttle.fail(key, now)
+            throttle.fail(account, now, ACCOUNT_MAX_FAILURES)  # slows password spraying from many IPs
             c.audit.record("auth.login_failed", actor_name=name[:64], target_type="user", target=name[:64],
                            ip=client_ip(request))
             log.info("failed sign-in for '%s' from %s", name[:64], client_ip(request))
@@ -169,6 +177,7 @@ def build_router() -> APIRouter:
         if not u.is_active:
             raise ApiError(403, "This account has been deactivated. Contact a Super Admin.", "account_inactive")
         throttle.success(key)
+        throttle.success(account)
         c.users.record_login(u.id, now)
         u = c.users.get(u.id) or u
         ttl = c.settings.refresh_ttl_remember if body.remember else c.settings.refresh_ttl_session

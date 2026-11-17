@@ -33,6 +33,7 @@ PERMISSIONS: dict[str, str] = {
     "violations:view": "View violations and their snapshots",
     "violations:ack": "Acknowledge violations",
     "violations:export": "Export violations to CSV",
+    "violations:export_images": "Export worker photos in bulk (training dataset zip)",
     "violations:delete": "Delete violations",
     "analytics:view": "View the analytics page",
     "config:view": "View the configuration",
@@ -69,7 +70,9 @@ BCRYPT_ROUNDS = 12
 MIN_PASSWORD_LENGTH = 8
 MAX_PASSWORD_BYTES = 72  # bcrypt ignores (bcrypt>=5: rejects) anything past 72 bytes
 SEED_USERNAME = "admin"
-SEED_PASSWORD = "mahindra123"  # documented bootstrap credential; forced to change on first login
+# The old public bootstrap password: still refused as a new password. New installs no longer use it:
+# the first account gets PPE_INITIAL_ADMIN_PASSWORD, or a random one-time password printed in the log.
+SEED_PASSWORD = "mahindra123"
 
 
 def hash_password(password: str, rounds: int | None = None) -> str:

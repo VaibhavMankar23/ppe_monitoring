@@ -193,7 +193,7 @@ def test_websocket_multiplexes_video_for_subscribed_cameras_only(client):
     mon = client.mon
     for sid in ("cam1", "cam2"):
         w = mon.workers[sid]
-        w._jpeg, w.out_seq = cv2.imencode(".jpg", np.zeros((8, 8, 3), np.uint8))[1].tobytes(), 1
+        w._view, w.out_seq = (np.zeros((8, 8, 3), np.uint8), [], []), 1  # encoded on request
     with client.websocket_connect(f"/ws?access_token={client.tokens['admin']}") as ws:
         assert '"hello"' in ws.receive_text()
         ws.send_json({"type": "subscribe", "streams": {"cam2": 10}})
@@ -235,3 +235,26 @@ def test_app_runs_with_no_cameras_yet(tmp_path):
         new = {**doc["config"], "streams": [{"id": "gate", "name": "Gate", "source": {"type": "rtsp", "uri": "rtsp://127.0.0.1:9/x", "timeout": 1}}]}
         r = c.put("/api/config", headers=h, json={"config": new, "etag": doc["etag"]})
         assert r.status_code == 200 and r.json()["reload"]["added"] == ["gate"]
+
+
+def test_camera_picture_is_encoded_only_on_request_and_at_the_size_asked(tmp_path):
+    """Nobody watching: no drawing / JPEG work per frame. A small tile gets a small JPEG, cached per size."""
+    from app.config import load_config
+    from app.pipeline import StreamWorker
+    from app.ppe_logic import Detection
+    from app.sources import Frame
+    from app.violations_db import ViolationStore
+    from helpers import raw_config, write_config
+    import time
+
+    cfg = load_config(write_config(tmp_path, raw_config(tmp_path, n_streams=1)))
+    w = StreamWorker(cfg.streams[0], cfg, ViolationStore(":memory:"))
+    img = np.full((540, 960, 3), 90, np.uint8)
+    for i in range(3):
+        w._process(Frame(img, i + 1, time.monotonic()), [Detection("person", 0.9, (100.0, 100.0, 180.0, 400.0))], 5.0, 1)
+    assert w._enc == {}  # three frames processed, nothing encoded
+    seq, full = w.jpeg()
+    seq2, small = w.jpeg(400)  # rounded up to the 480 px size
+    assert seq == seq2 == w.out_seq and len(small) < len(full)
+    assert cv2.imdecode(np.frombuffer(small, np.uint8), cv2.IMREAD_COLOR).shape[1] == 480
+    assert w.jpeg(400)[1] is small  # cached for this frame

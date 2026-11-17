@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import logging
 import os
 import threading
@@ -34,12 +35,12 @@ from .annotate import draw, evidence_image, person_crop, violation_snapshot
 from .config import AppConfig, InferenceConfig, ModelConfig, StreamConfig
 from .detector import Detector, build_detector
 from .ppe_logic import (
-    BEHAVIOR_CLASS, Box, ComplianceSmoother, Detection, PersonCompliance, PPE_ITEMS, Zone, ZONE_ITEMS, apply_zones, drop_group_boxes, mask_unmonitored, crop_region, detectable_items, evaluate_frame, match_person, unchecked,
+    BEHAVIOR_CLASS, Box, ComplianceSmoother, Detection, PersonCompliance, PPE_ITEMS, Zone, ZONE_ITEMS, apply_zones, drop_group_boxes, mask_unmonitored, crop_region, detectable_items, disproved_items, evaluate_frame, match_person, unchecked,
     merge_refined, refine_person_box,
 )
 from .sources import Frame, FrameGrabber
 from .tracker import ByteTracker
-from .violations import AlertDebouncer, Fire, Incident, Step
+from .violations import AlertDebouncer, Fire, Incident, PresenceCounter, Step
 from .violations_db import OBS_BUCKET, ViolationStore
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,19 @@ def default_post_workers() -> int:
     return max(2, min(8, (os.cpu_count() or 4) // 2))
 
 
+# Batch sizes when inference.max_batch / refine_batch are 0 (auto): (camera frames, person crops) per
+# model call. A GPU is most efficient with large batches; a CPU gains little from them and each call
+# just takes longer, so cameras would wait more.
+AUTO_BATCH: dict[str, tuple[int, int]] = {"cuda": (16, 8), "intel:gpu": (8, 4)}
+CPU_BATCH = (8, 2)
+
+
+def effective_batches(icfg: InferenceConfig, device: str) -> tuple[int, int]:
+    """(max_batch, refine_batch) for this device: configured values win, 0 means auto."""
+    auto = next((v for k, v in AUTO_BATCH.items() if str(device).startswith(k)), CPU_BATCH)
+    return icfg.max_batch or auto[0], icfg.refine_batch or auto[1]
+
+
 def batch_buckets(max_batch: int) -> list[int]:
     """Batch sizes an accelerator is compiled for: 1, 2, 4, ... and max_batch itself."""
     out, n = [], 1
@@ -63,6 +77,8 @@ def batch_buckets(max_batch: int) -> list[int]:
 
 
 THUMB_HEIGHT = 240
+VIEW_WIDTHS = (320, 480, 640)  # sizes a viewer can ask for (rounded up); larger = full processing width
+RATE_WINDOW_S = 3.0  # seconds of frames that confirm a violation / smooth a verdict at low frame rates
 OBS_FLUSH_SECONDS = 60.0  # how often worker counters (compliance-rate denominator) are written
 EVENT_WRITE_SECONDS = 2.0  # how often an ongoing violation event is written back (duration / observations)
 
@@ -94,6 +110,7 @@ class StreamWorker:
         self.behaviors = ["phone_use"] if cfg.detect_phone else []  # behavioural checks for this camera
         self.zones = [Zone(z.name, z.type, tuple(z.points)) for z in cfg.zones]
         self._detectable: set[str] | None = None  # PPE items this model can actually judge (set once ready)
+        self._learned_from: Detector | None = None  # detector _detectable / _live_behaviors were learned from
         self._live_behaviors: list[str] = self.behaviors  # behaviours the loaded model can actually see
         self.confidence = cfg.confidence if cfg.confidence is not None else app_cfg.model.default_confidence
         self.show_boxes = True
@@ -130,12 +147,15 @@ class StreamWorker:
 
         # outputs
         self._out_lock = threading.Lock()
-        self._jpeg: bytes | None = None
+        # newest output, drawn and JPEG-encoded only when someone watches (jpeg()), at the size asked
+        self._view: tuple[np.ndarray, list[PersonCompliance], list[Detection]] | None = None
+        self._enc: dict[int, bytes | None] = {}  # width -> JPEG of the current out_seq
         self.out_seq = 0
         self._last_output = 0.0
         self._proc_times: deque[float] = deque(maxlen=60)
         self.frames_processed = 0
         self.dropped_alerts = 0  # phantom detections rejected by the evidence pass
+        self.disproved_alerts = 0  # alerts whose every claim the evidence pass showed wrong
         self.error = ""
         self._error_t = 0.0
         self._meta: dict[str, Any] = {}
@@ -143,8 +163,10 @@ class StreamWorker:
 
         # camera session + observation counters (see ViolationStore.add_observations)
         self.run_id = ""
-        self._counted: set[int] = set()  # track IDs already counted as "seen" this session
-        self._flagged: set[int] = set()  # track IDs already counted as "violating"
+        # compliance-rate counters count people, not tracking IDs (a worker re-acquired under a new ID
+        # after an occlusion is the same person): see violations.PresenceCounter
+        self.presence = PresenceCounter()
+        self._flagged: set[int] = set()  # person keys already counted as "violating"
         self._obs: dict[int, list[int]] = {}  # bucket -> [seen, violating], not yet written
         self._obs_flushed = time.monotonic()
 
@@ -154,7 +176,7 @@ class StreamWorker:
             return
         self.running = True
         self.run_id = f"{self.id}-{int(time.time() * 1000):x}"  # track IDs restart at #1 in every session
-        self._counted, self._flagged, self._obs = set(), set(), {}
+        self.presence, self._flagged, self._obs = PresenceCounter(), set(), {}
         self.grabber.start()
         log.info("[%s] started", self.id)
 
@@ -252,11 +274,9 @@ class StreamWorker:
             img = frame.image.copy()
             cv2.putText(img, "detection paused (focus mode)", (12, img.shape[0] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                         (255, 255, 255), 2, cv2.LINE_AA)
-            ok, buf = cv2.imencode(".jpg", img, self._encode)
-            if ok:
-                with self._out_lock:
-                    self._jpeg = buf.tobytes()
-                    self.out_seq += 1
+            with self._out_lock:
+                self._view, self._enc = (img, [], []), {}
+                self.out_seq += 1
             self._last_output = time.monotonic()
             self.people = []
             self._meta = {**self._meta, "people": []}
@@ -271,19 +291,22 @@ class StreamWorker:
         persons = drop_group_boxes([d for d in dets if d.cls == "person"])
         ppe = [d for d in dets if d.cls != "person" and d.conf >= conf]
         tracked = self.tracker.update(persons, frame.ts, high_thresh=conf)
-        if self._detectable is None:  # learn what the loaded model can judge, once it's ready
-            det = self._detector()
-            if det is not None:
-                self._detectable = detectable_items(det.classes)
-                blind = [i for i in self.required if i not in self._detectable]
-                if blind:
-                    log.warning("[%s] required PPE the model cannot detect (not enforced): %s "
-                                "- remove these from the camera's required PPE, or use a model that detects them.",
-                                self.id, ", ".join(blind))
-                self._live_behaviors = [b for b in self.behaviors if BEHAVIOR_CLASS[b] in det.classes]
-                if len(self._live_behaviors) < len(self.behaviors):
-                    log.warning("[%s] phone-use detection is on but no phone model is loaded (not enforced) "
-                                "- set model.phone_weights, e.g. ../models/coco/yolov8n.pt", self.id)
+        # Learn what the loaded model can judge once it's ready, and again whenever a hot reload swaps the
+        # detector (e.g. a phone model added in Settings): learning only once left phone use unchecked
+        # until a restart while the UI said it was checked.
+        det = self._detector()
+        if det is not None and det is not self._learned_from:
+            self._learned_from = det
+            self._detectable = detectable_items(det.classes)
+            blind = [i for i in self.required if i not in self._detectable]
+            if blind:
+                log.warning("[%s] required PPE the model cannot detect (not enforced): %s "
+                            "- remove these from the camera's required PPE, or use a model that detects them.",
+                            self.id, ", ".join(blind))
+            self._live_behaviors = [b for b in self.behaviors if BEHAVIOR_CLASS[b] in det.classes]
+            if len(self._live_behaviors) < len(self.behaviors):
+                log.warning("[%s] phone-use detection is on but no phone model is loaded (not enforced) "
+                            "- set model.phone_weights, e.g. ../models/coco/yolov8n.pt", self.id)
         people = evaluate_frame(
             tracked, ppe, self.required,
             behaviors=self._live_behaviors,
@@ -292,43 +315,41 @@ class StreamWorker:
             min_person_height=cc.min_person_height,
             frame_size=(w, h),
             detectable=self._detectable,
+            item_min_height=cc.item_min_height,
         )
         apply_zones(people, self.zones, (w, h))
+        self._adapt_to_rate(frame.ts)
         self.smoother.apply(people)
         mask_unmonitored(people)
         live = self.tracker.live_ids()
         self.smoother.prune(live)
-        for p in people:  # every worker whose compliance could be judged counts once per session
-            if p.status != "unknown" and p.track_id not in self._counted:
-                self._counted.add(p.track_id)
-                self._count_obs(seen=1)
+        # every worker whose compliance could be judged counts once per session
+        seen = self.presence.step([(p.track_id, p.box, p.status != "unknown") for p in people], frame.ts)
+        if seen:
+            self._count_obs(seen=seen)
 
         attached = {id(d) for p in people for d in p.ppe}
         stray = [d for d in ppe if id(d) not in attached]
-        annotated = draw(frame.image.copy(), people, stray)
-        shown = annotated if self.show_boxes else frame.image
-
         confident = (lambda p: p.conf >= conf) if self.app_cfg.alerts.require_confident_box else None
         step = self.debouncer.step(people, frame.ts, confident,
                                    score=lambda p: self._evidence_candidate(frame, p, conf))
         for f in step.fired:  # evidence from the best frame of the confirmation window
             best_frame, best_p, score = f.best if f.best is not None else (frame, f.person, None)
             self._record_violation(best_frame, best_p, f, score)
-        self._sync_incidents(step)
+        self._sync_incidents(step, frame, people)
 
-        ok, buf = cv2.imencode(".jpg", shown, self._encode)
+        # the picture for viewers is drawn and encoded later, on request (jpeg()): with nobody on
+        # the Live page, no camera spends time on boxes and JPEG compression
         now = time.monotonic()
-        if ok:
-            with self._out_lock:
-                self._jpeg = buf.tobytes()
-                self.out_seq += 1
+        with self._out_lock:
+            self._view, self._enc = (frame.image, people, stray), {}
+            self.out_seq += 1
         self._last_output = now
         self._proc_times.append(now)
         self.frames_processed += 1
         self.people = people
         if now - self._obs_flushed >= OBS_FLUSH_SECONDS:
-            self._counted &= live  # IDs are never reused within a session, so gone tracks can be forgotten
-            self._flagged &= live
+            self._flagged &= self.presence.known()  # people the counter has forgotten can't come back as themselves
             self._flush_observations()
 
         counts = Counter(d.cls for d in dets if d.conf >= conf)
@@ -353,7 +374,26 @@ class StreamWorker:
             ],
         }
 
+    def _adapt_to_rate(self, ts: float) -> None:
+        """Confirmation and smoothing count frames, so their meaning depends on the detection rate:
+        6 frames is 2 s at 3 fps but 15 s at 0.4 fps, longer than most workers stay in view, so a busy
+        server never confirmed anything. Use about RATE_WINDOW_S seconds of frames instead, never more
+        than configured and never fewer than 2 (one bad frame alone never alerts)."""
+        last = getattr(self, "_rate_ts", None)
+        self._rate_ts = ts
+        if last is None or ts <= last:
+            return
+        dt = ts - last
+        self._rate_dt = dt if not getattr(self, "_rate_dt", 0.0) else 0.8 * self._rate_dt + 0.2 * dt
+        frames = max(2, math.ceil(RATE_WINDOW_S / self._rate_dt))
+        self.debouncer.min_frames = min(self.app_cfg.alerts.min_violation_frames, frames)
+        self.smoother.effective = min(self.app_cfg.compliance.smoothing_window, max(3, frames))
+
     def evidence_box(self, frame: Frame, p: PersonCompliance) -> tuple[Box, bool | None]:
+        box, confirmed, _, _ = self.evidence(frame, p)
+        return box, confirmed
+
+    def evidence(self, frame: Frame, p: PersonCompliance) -> tuple[Box, bool | None, list[Box], list[Detection]]:
         """Full-res box of the offending worker for the snapshot, re-detected on *this* frame.
 
         Returns (box, confirmed): confirmed is True when the re-detection found this worker, False
@@ -369,21 +409,25 @@ class StreamWorker:
         size = self.app_cfg.alerts.evidence_imgsz
         det = self._detector()
         if not size or det is None:
-            return box, None
+            return box, None, [], []
         # generous crop: the coarse box can be ~10 % off in any direction
         x1, y1, x2, y2 = crop_region(box, full.shape[1], full.shape[0], pad_x=0.35, pad_top=0.25, pad_bottom=0.2)
         if x2 - x1 < 16 or y2 - y1 < 16:
-            return box, None
+            return box, None, [], []
         square, s = letterbox_square(full[y1:y2, x1:x2], size)
         try:
             dets = det.predict([square], min(self.confidence, 0.35), imgsz=size)[0]
         except Exception:  # evidence refinement must never lose the alert
             log.exception("[%s] evidence re-detection failed; using the tracked box", self.id)
-            return box, None
-        persons = [Detection("person", d.conf, (d.box[0] / s + x1, d.box[1] / s + y1, d.box[2] / s + x1, d.box[3] / s + y1))
-                   for d in dets if d.cls == "person"]
+            return box, None, [], []
+        mapped = [Detection(d.cls, d.conf, (d.box[0] / s + x1, d.box[1] / s + y1, d.box[2] / s + x1, d.box[3] / s + y1))
+                  for d in dets]
+        persons = [d for d in mapped if d.cls == "person"]
         hit = match_person(Detection("person", p.conf, box), persons, min_iou=0.3)
-        return (box, False) if hit is None else (hit.box, True)
+        if hit is None:
+            return box, False, [], []
+        # the other workers and the PPE seen sharply: used to re-check what this worker is said to miss
+        return hit.box, True, [q.box for q in persons if q is not hit], [d for d in mapped if d.cls != "person"]
 
     @staticmethod
     def _item_confidence(p: PersonCompliance, missing: list[str]) -> dict[str, float | None]:
@@ -420,13 +464,24 @@ class StreamWorker:
     def _record_violation(self, frame: Frame, p: PersonCompliance, fire: Fire | None = None,
                           score: float | None = None) -> None:
         full = frame.full_res
-        box, confirmed = self.evidence_box(frame, p)
+        box, confirmed, others, sharp_ppe = self.evidence(frame, p)
         if confirmed is False and self.app_cfg.alerts.drop_unconfirmed:
             log.info("[%s] alert for track #%d dropped: no person at full resolution (phantom detection)",
                      self.id, p.track_id)
             self.dropped_alerts += 1
             return
         missing = sorted(fire.incident.missing) if fire else list(p.missing)
+        if confirmed and self.app_cfg.alerts.verify_claims:
+            cleared = disproved_items(box, others, sharp_ppe, missing, self.confidence)
+            if cleared:
+                if fire:  # the rest of this event can't bring them back either
+                    fire.incident.cleared |= cleared
+                    fire.incident.missing -= cleared
+                missing = [m for m in missing if m not in cleared]
+                log.info("[%s] track #%d: the sharp evidence pass shows %s present", self.id, p.track_id, ", ".join(sorted(cleared)))
+                if not missing:  # every claim was wrong: no alert (the incident stays, quietly, for this event)
+                    self.disproved_alerts += 1
+                    return
         off = time.time() - time.monotonic()  # one clock offset: the three stamps stay in order
         frame_wall = frame.ts + off
         detected_wall = fire.since + off if fire else frame_wall
@@ -490,23 +545,45 @@ class StreamWorker:
         if fire is not None:
             fire.incident.record_id = d["id"]
             self._inc_written[fire.incident.key] = (time.monotonic(), frozenset(missing))
-        if p.track_id not in self._flagged:
-            self._flagged.add(p.track_id)
+        person = self.presence.person(p.track_id) or -p.track_id
+        if person not in self._flagged:
+            self._flagged.add(person)
             self._count_obs(violating=1)
 
-    def _sync_incidents(self, step: Step) -> None:
+    def _sync_incidents(self, step: Step, frame: Frame | None = None, people: list[PersonCompliance] = ()) -> None:  # type: ignore[assignment]
         """Extend the stored violation of each ongoing incident (throttled), and close ended ones."""
         now = time.monotonic()
         for inc in step.extended + step.ended:
             if inc.record_id is None or inc.record_gone:
                 continue
             last, written = self._inc_written.get(inc.key, (0.0, frozenset()))
+            if frame is not None and self.app_cfg.alerts.verify_claims:
+                self._verify_new_items(inc, written, frame, people)
             missing = frozenset(inc.missing)
             if not inc.ended and missing == written and now - last < EVENT_WRITE_SECONDS:
                 continue
             self._write_incident(inc, missing != written)
         for inc in step.ended:
             self._inc_written.pop(inc.key, None)
+
+    def _verify_new_items(self, inc: Incident, written: frozenset[str], frame: Frame, people: list[PersonCompliance]) -> None:
+        """An ongoing event gained a missing item (a hand over the helmet, a turn away from the camera):
+        it gets the same sharp re-check as the alert's first claims before it is written. Until a check
+        has run (worker not in this frame, or not confirmed sharply) the item is held back, not written."""
+        new = inc.missing - written - inc.cleared
+        if not new:
+            return
+        p = next((q for q in people if q.track_id in inc.tracks and q.status == "non_compliant"), None)
+        box, confirmed, others, sharp_ppe = self.evidence(frame, p) if p is not None else (None, None, [], [])
+        if not confirmed:
+            inc.missing -= new  # held back: a later frame of the event raises it again and re-checks
+            return
+        cleared = disproved_items(box, others, sharp_ppe, new, self.confidence)
+        if cleared:
+            inc.cleared |= cleared
+            inc.missing -= cleared
+            log.info("[%s] track #%d: not adding %s, the sharp evidence pass shows it present",
+                     self.id, p.track_id, ", ".join(sorted(cleared)))
 
     def _write_incident(self, inc: Incident, missing_changed: bool, ended: bool | None = None) -> None:
         try:
@@ -544,9 +621,25 @@ class StreamWorker:
                 log.exception("[%s] could not store observation counters", self.id)
 
     # ------------------------------------------------------------ outputs
-    def jpeg(self) -> tuple[int, bytes | None]:
+    def jpeg(self, width: int = 0) -> tuple[int, bytes | None]:
+        """The newest frame as JPEG, with boxes (unless switched off), at most `width` px wide (0 = full
+        processing width). Drawn and encoded on the first request per frame and size, then cached:
+        nothing is spent on a camera nobody is watching. Call it off the event loop (it encodes)."""
+        width = next((b for b in VIEW_WIDTHS if width and width <= b), 0)
         with self._out_lock:
-            return self.out_seq, self._jpeg
+            seq, view = self.out_seq, self._view
+            if width in self._enc or view is None:
+                return seq, self._enc.get(width)
+        img, people, stray = view
+        out = draw(img.copy(), people, stray) if self.show_boxes and (people or stray) else img
+        if width and out.shape[1] > width:
+            out = cv2.resize(out, (width, round(out.shape[0] * width / out.shape[1])), interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode(".jpg", out, self._encode)
+        data = buf.tobytes() if ok else None
+        with self._out_lock:
+            if self.out_seq == seq:
+                self._enc[width] = data
+        return seq, data
 
     @property
     def fps(self) -> float:
@@ -611,7 +704,7 @@ class StreamWorker:
             "enabled": self.cfg.enabled,
             "priority": self.priority,
             "paused": self.paused,
-            "health": {**g.health(), "alerts_dropped": self.dropped_alerts},
+            "health": {**g.health(), "alerts_dropped": self.dropped_alerts, "alerts_disproved": self.disproved_alerts},
             # operator view: when did this camera last deliver a frame / a detection result / a violation
             "connected": self.running and g.state == "live",
             "last_frame_at": self._wall(g._last_live) if g._last_live else None,
@@ -638,7 +731,7 @@ class InferenceEngine:
         # people shorter than this are judged "unknown" anyway, so they're not worth a crop
         self.refine_min_height = max(icfg.refine_min_height, min_person_height)
         self.evidence_imgsz = evidence_imgsz
-        self.max_batch = max(1, icfg.max_batch)
+        self.max_batch, self.refine_batch = effective_batches(icfg, getattr(detector, "device", ""))
         # Accelerators that compile per input shape (OpenVINO GPU) get batches padded to a few fixed
         # sizes; elsewhere padding would only waste compute.
         self.pad_batches = str(getattr(detector, "device", "")).startswith("intel:gpu")
@@ -666,7 +759,10 @@ class InferenceEngine:
             "frames_per_s": round(frames / span, 2) if calls else 0.0,
             "avg_batch": round(frames / len(calls), 2) if calls else 0.0,
             "avg_call_ms": round(busy / len(calls) * 1000, 1) if calls else 0.0,
-            "max_batch": self.max_batch, "padded_batches": self.pad_batches, "cameras": len(self.workers),
+            # detector time per analysed frame, crop pass included: 1000 / this = frames/s at 100 % busy
+            "ms_per_frame": round(busy / frames * 1000, 1) if frames else 0.0,
+            "max_batch": self.max_batch, "refine_batch": self.refine_batch, "padded_batches": self.pad_batches,
+            "cameras": len(self.workers),
             "contended_loops": self.contended,
         }
 
@@ -686,7 +782,7 @@ class InferenceEngine:
             self.detector.predict([img] * n, 0.5)
         if self.icfg.person_refine:
             s = self.icfg.refine_imgsz
-            self.detector.predict([np.zeros((s, s, 3), dtype=np.uint8)] * max(1, self.icfg.refine_batch), 0.5, imgsz=s)
+            self.detector.predict([np.zeros((s, s, 3), dtype=np.uint8)] * self.refine_batch, 0.5, imgsz=s)
         if self.evidence_imgsz:  # compiled now rather than on the first alert
             s = self.evidence_imgsz
             self.detector.predict([np.zeros((s, s, 3), dtype=np.uint8)], 0.5, imgsz=s)
@@ -768,7 +864,7 @@ class InferenceEngine:
         # Fixed input shape (N x S x S, N = refine_batch): accelerators like the OpenVINO GPU
         # plugin recompile for every new shape, which would stall the pipeline for ~1 s each time.
         t0 = time.perf_counter()
-        n = max(1, ic.refine_batch)
+        n = self.refine_batch
         pad = (-len(crops)) % n
         blank = np.full_like(crops[0], 114)
         batch = crops + [blank] * pad
@@ -1049,6 +1145,7 @@ class Monitor:
             "engines": engines, "host": host, "cameras": cams, "focus": self.focus_state(),
             "capacity": {
                 "engine_utilization": util,
+                "max_fps_per_stream": self.cfg.inference.max_fps_per_stream,
                 # rough: the engine is the bottleneck; near 100 % busy means cameras start waiting
                 "state": "saturated" if util >= 0.9 else "busy" if util >= 0.7 else "ok",
             },

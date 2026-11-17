@@ -178,3 +178,28 @@ def test_checks_the_model_cannot_do_are_reported_and_not_evaluated(tmp_path):
     with_phone = _Stub(["person", "helmet", "no_helmet", "gloves", "phone"], [])
     assert StreamWorker(cfg.streams[0], cfg, store, detector=lambda: with_phone).unenforced() == []
     store.close()
+
+
+def test_phone_model_added_by_hot_reload_is_used_without_a_restart(tmp_path):
+    """Issue #30: what the model can judge was learned once per camera, so a phone model loaded later
+    (Settings -> hot reload swaps the detector) was never used until the cameras were restarted."""
+    raw = raw_config(tmp_path, n_streams=1)
+    raw["streams"][0].update(required_ppe=[], detect_phone=True)
+    cfg = load_config(write_config(tmp_path, raw))
+    current = {"det": _Stub(["person", "helmet", "no_helmet"], [])}  # no phone model yet
+    store = ViolationStore(":memory:")
+    w = StreamWorker(cfg.streams[0], cfg, store, detector=lambda: current["det"])
+    person = Detection("person", 0.9, (100.0, 40.0, 180.0, 320.0))
+    phone = Detection("phone", 0.8, (130.0, 150.0, 150.0, 180.0))
+    img = np.zeros((360, 640, 3), np.uint8)
+    for i in range(4):
+        w._process(Frame(img, i + 1, time.monotonic()), [person], 5.0, 1)
+    assert all("phone_use" not in p["items"] for p in w._meta.get("people", []))
+
+    current["det"] = _Stub(["person", "helmet", "no_helmet", "phone"], [])  # the hot-reloaded detector
+    for i in range(4, 8):
+        w._process(Frame(img, i + 1, time.monotonic()), [person, phone], 5.0, 1)
+    people = w._meta.get("people", [])
+    assert people and all("phone_use" in p["items"] for p in people)
+    assert w.unenforced() == []
+    store.close()

@@ -2,12 +2,13 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { api, jpegDataUrl } from "../../lib/api";
 import { fmtTime, violationLabel } from "../../lib/format";
 import { href, navigate, navigateWith, ROUTE_PERMISSION, type Route } from "../../lib/router";
+import { useAlertSound, useIncidentAlert, useSoundAllowed } from "../../lib/alerts";
 import { useTheme } from "../../lib/theme";
 import { useAuth } from "../../state/auth";
 import { useMonitor } from "../../state/monitor";
 import type { Violation } from "../../types";
 import { passwordAcceptable, PasswordField, PolicyChecklist } from "../admin/PasswordPolicy";
-import { Button, cx, Dialog, Field, Icon, Notice, useToast, type IconName } from "../ui";
+import { Button, cx, Dialog, Field, Icon, lockScroll, Notice, useToast, type IconName } from "../ui";
 
 type Page = Exclude<Route, "login">;
 
@@ -113,6 +114,35 @@ function Bell() {
         </div>
       )}
     </div>
+  );
+}
+
+// ------------------------------------------------------------------ incident sound
+
+/** Chime + flashing tab title on every new incident; the button turns the sound on or off. */
+function SoundButton() {
+  const { onViolation } = useMonitor();
+  const [on, setOn] = useAlertSound();
+  const allowed = useSoundAllowed();
+  const alert = useIncidentAlert(on);
+  useEffect(() => onViolation(() => alert()), [onViolation, alert]);
+  if (on && !allowed) {
+    // browsers block sound until someone clicks the page (again after every reload): say so plainly
+    return (
+      // on press, not click: the press itself unlocks sound and this button is replaced before a click lands
+      <button type="button" onPointerDown={() => setOn(true)} onClick={() => setOn(true)}
+        className="inline-flex h-9 items-center gap-1.5 rounded-full border border-warn-line bg-warn-soft px-3 text-[12.5px] font-semibold whitespace-nowrap text-warn hover:brightness-95"
+        title="The browser blocks sound until this page is clicked once" aria-label="Click to turn on sound">
+        <Icon name="volumeOff" size={16} /><span className="hidden 2xl:inline">Click to turn on sound</span><span className="2xl:hidden">Sound off</span>
+      </button>
+    );
+  }
+  return (
+    <button type="button" className={NAV_ICON} onClick={() => setOn(!on)} aria-pressed={on}
+      aria-label={on ? "Incident sound on. Turn off" : "Incident sound off. Turn on"}
+      title={on ? "Sound on new incidents: on" : "Sound on new incidents: off"}>
+      <Icon name={on ? "volume" : "volumeOff"} size={18} />
+    </button>
   );
 }
 
@@ -310,7 +340,7 @@ function LiveChip() {
       className={cx("hidden h-9 items-center gap-2 rounded-full border px-3 text-[12.5px] font-semibold no-underline md:inline-flex",
         tone === "ok" ? "border-ok-line bg-ok-soft text-ok" : tone === "warn" ? "border-warn-line bg-warn-soft text-warn" : "border-bad-line bg-bad-soft text-bad")}>
       <span className={cx("size-[7px] rounded-full bg-current", tone === "ok" && "live-ping")} />
-      {text}<span className="font-mono font-medium opacity-70">{live}/{streams.length}</span>
+      {text}<span className="hidden font-medium opacity-70 2xl:inline">· <span className="font-mono">{live}/{streams.length}</span> cameras live</span>
     </a>
   );
 }
@@ -371,6 +401,7 @@ function TopNav({ route }: { route: Page }) {
           <LiveChip />
           <button type="button" onClick={() => setSearch(true)} className={NAV_ICON} aria-label="Search (Ctrl K)" title="Search (Ctrl K)"><Icon name="search" size={18} /></button>
           <Bell />
+          <SoundButton />
           <ThemeButton />
           <span className="mx-1 h-6 w-px bg-line" aria-hidden="true" />
           <AccountMenu />
@@ -383,6 +414,8 @@ function TopNav({ route }: { route: Page }) {
 
 /** App frame (v3): floating glass navigation above the page. */
 export function Shell({ route, children }: { route: Page; children: ReactNode }) {
+  // safety net: changing page with nothing open always gives the page its scrolling back
+  useEffect(() => { lockScroll(); }, [route]);
   return (
     <RouteCtx.Provider value={route}>
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-surface focus:px-3 focus:py-2 focus:shadow-pop">

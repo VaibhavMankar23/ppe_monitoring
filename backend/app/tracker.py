@@ -67,6 +67,31 @@ def _match(tracks: list[_Track], dets: list[Detection], now: float, thresh: floa
     return matches, [i for i in range(len(tracks)) if i not in mt], [j for j in range(len(dets)) if j not in md]
 
 
+def _match_distance(tracks: list[_Track], dets: list[Detection], now: float) -> list[tuple[int, int]]:
+    """Low frame rates: match by distance from each track's predicted position, in body heights.
+
+    A worker walking ~0.7 body heights a second has left their old box entirely when frames are
+    seconds apart, so IoU finds nothing. Allowed distance grows with the time since the track was
+    seen (capped at 2 heights) and the two boxes must be of similar size."""
+    if not tracks or not dets:
+        return []
+    big = 1e6
+    cost = np.full((len(tracks), len(dets)), big, dtype=np.float32)
+    for i, t in enumerate(tracks):
+        p = t.predict(now)
+        ph = max(1.0, p[3] - p[1])
+        reach = ph * min(2.0, 0.5 + 0.7 * max(0.0, now - t.last_seen))
+        for j, d in enumerate(dets):
+            dh = max(1.0, d.box[3] - d.box[1])
+            if not 0.6 <= dh / ph <= 1.67:
+                continue
+            dist = (((p[0] + p[2]) - (d.box[0] + d.box[2])) ** 2 + ((p[1] + p[3]) - (d.box[1] + d.box[3])) ** 2) ** 0.5 / 2
+            if dist <= reach:
+                cost[i, j] = dist / ph
+    rows, cols = linear_sum_assignment(cost)
+    return [(r, c) for r, c in zip(rows, cols) if cost[r, c] < big]
+
+
 class ByteTracker:
     def __init__(
         self,
@@ -84,6 +109,8 @@ class ByteTracker:
         self._tracks: list[_Track] = []
         self._ids = itertools.count(1)
         self._first_frame = True
+        self._last_update: float | None = None
+        self._interval = 0.0  # typical seconds between updates (EMA): this camera's detection rate
 
     def reset(self) -> None:
         self._tracks.clear()
@@ -100,8 +127,15 @@ class ByteTracker:
         high = [d for d in detections if d.conf >= hi]
         low = [d for d in detections if lo <= d.conf < hi]
 
-        # Drop tracks lost for too long before matching so they can't be revived.
-        self._tracks = [t for t in self._tracks if now - t.last_seen <= self.max_lost_seconds]
+        if self._last_update is not None and now > self._last_update:
+            dt = now - self._last_update
+            self._interval = dt if self._interval == 0.0 else 0.8 * self._interval + 0.2 * dt
+        self._last_update = now
+        # Drop tracks lost for too long before matching so they can't be revived. "Too long" is at
+        # least 3 frames at this camera's rate: at 0.5 fps a fixed 2 s dropped every worker between
+        # two frames, so each got a new ID every frame and no violation could ever be confirmed.
+        lost = max(self.max_lost_seconds, 3.0 * self._interval)
+        self._tracks = [t for t in self._tracks if now - t.last_seen <= lost]
 
         # Stage 1: every live track vs high-confidence detections.
         m1, um_tracks, um_high = _match(self._tracks, high, now, self.match_iou)
@@ -112,10 +146,20 @@ class ByteTracker:
 
         # Stage 2: remaining tracks vs low-confidence detections (recovers occluded people).
         rest = [self._tracks[i] for i in um_tracks]
-        m2, _, _ = _match(rest, low, now, max(0.1, self.match_iou - 0.05))
+        m2, um_rest, _ = _match(rest, low, now, max(0.1, self.match_iou - 0.05))
         for ti, di in m2:
             rest[ti].update(low[di], now)
             matched.append(rest[ti])
+
+        # Stage 3: tracks still unmatched vs remaining confident detections, by distance (low fps).
+        still = [rest[i] for i in um_rest]
+        cand = [high[i] for i in um_high]
+        used: set[int] = set()
+        for ti, dj in _match_distance(still, cand, now):
+            still[ti].update(cand[dj], now)
+            matched.append(still[ti])
+            used.add(um_high[dj])
+        um_high = [i for i in um_high if i not in used]
 
         # New tracks from unmatched high-confidence detections.
         for di in um_high:

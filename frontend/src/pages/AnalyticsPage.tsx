@@ -294,9 +294,11 @@ export function AnalyticsPage() {
   const tickFmt = useCallback((t: number) => tickLabel(t, sg), [sg]);
   const longFmt = useCallback((t: number) => bucketLong(t, sg, size), [sg, size]);
 
+  // cameras in their configured order (as everywhere else), never re-ranked; removed cameras last
+  const camOrder = useMemo(() => new Map(streams.map((s, i) => [s.id, i])), [streams]);
   const camRows = useMemo(() => (data?.cameras ?? [])
     .filter((c) => !cameras.length || cameras.includes(c.stream_id))
-    .sort((a, b) => b.violations - a.violations || a.stream_name.localeCompare(b.stream_name)), [data, cameras]);
+    .sort((a, b) => (camOrder.get(a.stream_id) ?? 1e6) - (camOrder.get(b.stream_id) ?? 1e6) || a.stream_name.localeCompare(b.stream_name)), [data, cameras, camOrder]);
   const camBars = camRows.filter((c) => c.violations > 0).map((c) => ({ id: c.stream_id, name: c.stream_name, total: c.violations, by: c.by_ppe }));
   const stackItems = sortItems(camBars.flatMap((c) => Object.keys(c.by).filter((k) => c.by[k] > 0)));
   const ppeRows = [...(data?.ppe ?? [])].filter((p) => p.count > 0).sort((a, b) => b.count - a.count);
@@ -310,7 +312,7 @@ export function AnalyticsPage() {
   const reviewedCams = (review?.by_camera ?? []).filter((c) => c.valid + c.false_alarms > 0);
 
   return (
-    <Page title="Reports" description={range ? `${rangeText} · ${cameraText} · ${typeText}` : "Choose a date range."}
+    <Page title="Insights" description={range ? `${rangeText} · ${cameraText} · ${typeText}` : "Choose a date range."}
       toolbar={<>
         <Segmented label="Date range" value={preset} onChange={setPreset} options={PRESETS} />
         {preset === "custom" && (

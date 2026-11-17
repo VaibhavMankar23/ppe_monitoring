@@ -105,6 +105,11 @@ function SectionFields({ id, schema, draft }: { id: Exclude<SectionId, "advanced
           <FieldGrid>
             <TextField path="model.weights" label="PPE model weights" mono className="sm:col-span-2"
               hint="Path to the detector file, relative to the configuration file. It decides which PPE items can be checked at all." />
+            <TextField path="model.person_weights" label="Person model weights" mono className="sm:col-span-2" placeholder="../models/coco/yolov8n.pt"
+              hint="A general person detector that finds far, small and bent-over workers the PPE model misses on wide cameras. PPE is then checked on each worker close up. Empty uses the PPE model's own person detection: faster, but misses many workers." />
+            <SelectField path="model.person_tiles" numeric label="Person search tiles"
+              options={[{ value: "1", label: "Whole frame (fastest)" }, { value: "2", label: "2 x 2 tiles (recommended)" }, { value: "3", label: "3 x 3 tiles (very wide or high cameras)" }]}
+              hint="The frame is split into overlapping tiles so small workers look bigger to the model. Each step costs more detection time." />
             <TextField path="model.phone_weights" label="Phone model weights" mono className="sm:col-span-2" placeholder="../models/coco/yolov8n.pt"
               hint="A second detector, run only for cameras with phone-use detection on. Empty turns phone detection off everywhere." />
             <SelectField path="model.device" label="Device"
@@ -112,6 +117,8 @@ function SectionFields({ id, schema, draft }: { id: Exclude<SectionId, "advanced
               hint="Where detection runs. A CPU handles far fewer cameras than a GPU." />
             <ToggleField path="model.openvino" label="Use OpenVINO"
               hint="Speeds up Intel CPUs and integrated GPUs when there is no NVIDIA GPU. The model is converted once, on first use." />
+            <ToggleField path="model.tensorrt" label="Use TensorRT on NVIDIA"
+              hint="About 2-3 times faster detection on an NVIDIA GPU. The first start builds the engine, which takes several minutes; if that fails, detection runs on PyTorch." />
             <NumberField path="model.imgsz" label="Image size on GPU" unit="px"
               hint="Larger sees small, distant PPE better and costs more time per frame." />
             <NumberField path="model.cpu_imgsz" label="Image size on CPU" unit="px"
@@ -144,7 +151,7 @@ function SectionFields({ id, schema, draft }: { id: Exclude<SectionId, "advanced
             <NumberField path="inference.jpeg_quality" label="Live video JPEG quality" step={5}
               hint="Lower saves bandwidth to each browser and softens the picture. Detection is not affected." />
             <NumberField path="inference.max_batch" label="Max batch" unit="frames" step={1}
-              hint="Camera frames per model call. Ready cameras beyond it wait one turn." />
+              hint="Camera frames per model call. Ready cameras beyond it wait one turn. 0 = automatic: 16 on an NVIDIA GPU, 8 elsewhere." />
             <NumberField path="inference.post_workers" label="Post-processing workers" unit="threads" step={1}
               hint="Threads that judge compliance and encode video. 0 uses half the CPU cores. Takes effect after a server restart." />
             <NumberField path="inference.decode_threads" label="Decode threads per camera" unit="threads" step={1}
@@ -160,7 +167,7 @@ function SectionFields({ id, schema, draft }: { id: Exclude<SectionId, "advanced
                 <NumberField path="inference.refine_max_persons" label="Workers per frame" unit="people" step={1}
                   hint="Only this many get a close-up in one frame. The rest keep the first-pass result." />
                 <NumberField path="inference.refine_batch" label="Close-ups per model call" step={1}
-                  hint="Higher uses the GPU better and adds a little delay." />
+                  hint="Higher uses the GPU better and adds a little delay. 0 = automatic: 8 on an NVIDIA GPU, 4 on an Intel GPU, 2 on a CPU." />
                 <NumberField path="inference.refine_min_height" label="Smallest worker re-checked" unit="px" step={1}
                   hint="Workers shorter than this on screen are too small to judge and are skipped." />
               </>}
@@ -230,6 +237,8 @@ function SectionFields({ id, schema, draft }: { id: Exclude<SectionId, "advanced
                 hint="Holds the alert until the worker's box comes from a confident detection, so the evidence is not a tracker guess." />
               <ToggleField path="alerts.drop_unconfirmed" label="Drop unconfirmed alerts"
                 hint="Discards an alert when the full-resolution check finds no person there, such as machinery mistaken for a worker. Needs evidence re-detection." />
+              <ToggleField path="alerts.verify_claims" label="Re-check missing PPE"
+                hint="Before an item is reported missing, the sharp full-resolution check looks for it on that worker. Items it clearly shows are dropped, and an alert with nothing left is not raised. Needs evidence re-detection." />
             </FieldGrid>
           </Group>
           <Group title="Evidence">

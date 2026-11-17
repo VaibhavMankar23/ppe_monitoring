@@ -23,8 +23,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from pydantic import BaseModel, ValidationError
 
 from .auth import ApiError, client_ip, ctx, require
-from .config import SourceConfig, expand_env
-from .secret_box import MASK
+from .config import STREAM_ENV_VARS, SourceConfig, expand_env
+from .secret_box import MASK, same_endpoint
 from .sources import IMAGE_EXTS, VIDEO_EXTS, probe
 from .users_db import User
 
@@ -60,13 +60,19 @@ def _resolve_source(request: Request, raw: dict[str, Any], stream_id: str | None
     if raw.get("password") == MASK:
         stored = next((s.get("source", {}) for s in request.app.state.config_store.read_raw().get("streams", [])
                        if isinstance(s, dict) and s.get("id") == stream_id), {})
+        if not same_endpoint(str(raw.get("uri", "")), str(stored.get("uri", ""))):
+            raise ApiError(422, "The camera address changed: enter its password again to test it.", "password_required")
         raw["password"] = stored.get("password", "")
     try:
-        src = SourceConfig.model_validate(expand_env(raw))
+        src = SourceConfig.model_validate(expand_env(raw, STREAM_ENV_VARS))
     except ValidationError as e:
         raise ApiError(422, "; ".join(f"{'.'.join(map(str, x['loc']))}: {x['msg']}" for x in e.errors()), "invalid_source") from e
-    if src.type in ("file", "images") and not os.path.isabs(src.uri):
-        src.uri = str((request.app.state.config_store.path.parent / src.uri).resolve())
+    if src.type in ("file", "images"):
+        path = Path(src.uri) if os.path.isabs(src.uri) else request.app.state.config_store.path.parent / src.uri
+        src.uri = str(path.resolve())
+        root = videos_dir(request)
+        if not Path(src.uri).is_relative_to(root):  # the test returns a thumbnail: never of other server folders
+            raise ApiError(422, f"Recordings and image folders must be inside the videos folder ({root.name}/).", "outside_videos_dir")
     return src
 
 

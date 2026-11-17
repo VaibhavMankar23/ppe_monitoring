@@ -221,12 +221,16 @@ def evaluate_items(
     missing_policy: Literal["strict", "negative_only"] = "strict",
     frame_size: tuple[int, int] | None = None,
     detectable: set[str] | None = None,
+    item_min_height: dict[str, float] | None = None,
 ) -> dict[str, ItemStatus]:
     """Decide present / missing / unknown for every required item of one person.
 
     `detectable` (when given) is the set of items the model can actually detect; a required item
-    outside it is skipped entirely — the model has no class for it, so it can't be "missing"."""
+    outside it is skipped entirely — the model has no class for it, so it can't be "missing".
+    `item_min_height` (px) is the smallest worker on whom an item can be judged at all: a mask on a
+    60 px worker is a few pixels of face, so "not seen" (or a "no mask" guess) means nothing there."""
     result: dict[str, ItemStatus] = {}
+    height = person[3] - person[1]
     for item in required:
         if detectable is not None and item not in detectable:
             continue  # model can't detect this item at all -> uncheckable, never a violation
@@ -234,6 +238,8 @@ def evaluate_items(
         neg = max((d.conf for d in detections if d.item == item and d.is_negative), default=0.0)
         if pos > 0 and pos >= neg:
             result[item] = "present"
+        elif item_min_height and height < item_min_height.get(item, 0.0):
+            result[item] = "unknown"  # too small on screen to judge this item
         elif neg > 0:
             result[item] = "missing"
         elif missing_policy == "strict" and region_visible(person, item, frame_size):
@@ -273,6 +279,7 @@ def evaluate_frame(
     min_person_height: float = 0.0,
     frame_size: tuple[int, int] | None = None,
     detectable: set[str] | None = None,
+    item_min_height: dict[str, float] | None = None,
 ) -> list[PersonCompliance]:
     """Associate PPE (and any behaviour classes) to persons and evaluate compliance for one frame.
 
@@ -286,13 +293,33 @@ def evaluate_frame(
         if too_small:
             items: dict[str, ItemStatus] = {i: "unknown" for i in required}
         else:
-            items = evaluate_items(p.box, dets, required, missing_policy, frame_size, detectable)
+            items = evaluate_items(p.box, dets, required, missing_policy, frame_size, detectable, item_min_height)
             if not items and required:
                 # every required item is undetectable by this model -> we can't judge this worker
                 items = {i: "unknown" for i in required}
         for b in behaviors:
             items[b] = "unknown" if too_small else behavior_status(dets, b)
         out.append(PersonCompliance(p.track_id, p.box, p.conf, overall_status(items), items, dets))
+    return out
+
+
+def disproved_items(person: Box, others: list[Box], ppe: list[Detection], claims: "list[str] | set[str]",
+                    min_conf: float) -> set[str]:
+    """PPE items claimed missing that a sharper look shows *present* on this worker.
+
+    `ppe` comes from a high-resolution re-detection of the alert frame (the evidence pass), with
+    `others` the other workers found there, so a neighbour's helmet is never credited to this one.
+    An item is disproved by a positive detection of at least `min_conf` that beats any negative one."""
+    persons = [TrackedPerson(0, person, 1.0)] + [TrackedPerson(i + 1, b, 1.0) for i, b in enumerate(others)]
+    mine = associate(persons, ppe)[0]
+    out: set[str] = set()
+    for item in claims:
+        if item not in PPE_ITEMS:
+            continue  # behaviours and zones are not PPE: nothing to disprove here
+        pos = max((d.conf for d in mine if d.item == item and not d.is_negative), default=0.0)
+        neg = max((d.conf for d in mine if d.item == item and d.is_negative), default=0.0)
+        if pos >= min_conf and pos > neg:
+            out.add(item)
     return out
 
 
@@ -435,15 +462,18 @@ class ComplianceSmoother:
 
     def __init__(self, window: int = 6) -> None:
         self.window = max(1, window)
+        self.effective = self.window  # frames actually voted on; lowered at low frame rates (pipeline)
         self._hist: dict[int, dict[str, deque[ItemStatus]]] = {}
 
     def update(self, track_id: int, items: dict[str, ItemStatus]) -> dict[str, ItemStatus]:
         hist = self._hist.setdefault(track_id, {})
         smoothed: dict[str, ItemStatus] = {}
+        n = max(1, min(self.window, self.effective))
         for item, status in items.items():
             q = hist.setdefault(item, deque(maxlen=self.window))
             q.append(status)
-            present, missing = q.count("present"), q.count("missing")
+            recent = list(q)[-n:]
+            present, missing = recent.count("present"), recent.count("missing")
             if present == 0 and missing == 0:
                 smoothed[item] = "unknown"
             elif missing > present:

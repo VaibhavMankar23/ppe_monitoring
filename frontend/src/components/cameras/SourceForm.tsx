@@ -45,9 +45,11 @@ interface Props {
   schema: ConfigSchema;
   /** field errors relative to the source ("uri", "timeout", ...) */
   errors: Record<string, string>;
+  /** adding a camera: only what is needed to connect (timeouts, playback rate, loop... keep their defaults) */
+  essential?: boolean;
 }
 
-export function SourceForm({ source, onChange, hasStoredPassword, streamId, disabled, canUpload, schema, errors }: Props) {
+export function SourceForm({ source, onChange, hasStoredPassword, streamId, disabled, canUpload, schema, errors, essential = false }: Props) {
   const type: string = source.type ?? "file";
   const uri: string = source.uri ?? "";
   const types = schema.source_types.includes(type) ? schema.source_types : [type, ...schema.source_types];
@@ -125,7 +127,7 @@ export function SourceForm({ source, onChange, hasStoredPassword, streamId, disa
       <Field label="Source type" hint="Changing the type clears the address below." error={errors.type}>
         {(id) => (
           <Select id={id} value={type} disabled={disabled} onChange={(e) => setType(e.target.value)} className="sm:max-w-xs">
-            {types.map((t) => <option key={t} value={t}>{TYPE_LABEL[t] ?? t}</option>)}
+            {types.filter((t) => !essential || t !== "onvif").map((t) => <option key={t} value={t}>{TYPE_LABEL[t] ?? t}</option>)}
           </Select>
         )}
       </Field>
@@ -158,12 +160,12 @@ export function SourceForm({ source, onChange, hasStoredPassword, streamId, disa
                 </div>
               )}
             </Field>
-            <Field label={<>Timeout <span className="font-normal text-ink-3">s</span></>} error={errors.timeout}
+            {!essential && <Field label={<>Timeout <span className="font-normal text-ink-3">s</span></>} error={errors.timeout}
               hint="With no picture for this long the camera is treated as down and reconnects.">
               {(id) => <Input id={id} type="number" className="num" min={1} max={meta("timeout").maximum} step={1} disabled={disabled} invalid={!!errors.timeout}
                 value={source.timeout ?? ""} placeholder={String(meta("timeout").default ?? 10)} onChange={(e) => setNumber("timeout", e.target.value)} />}
-            </Field>
-            {type === "http" && (
+            </Field>}
+            {type === "http" && !essential && (
               <Field label={<>Snapshot polls <span className="font-normal text-ink-3">per second</span></>} optional error={errors.fps}
                 hint="Only for snapshot URLs: how often the picture is fetched.">
                 {(id) => <Input id={id} type="number" className="num" min={0} max={30} step={1} disabled={disabled} invalid={!!errors.fps}
@@ -224,7 +226,7 @@ export function SourceForm({ source, onChange, hasStoredPassword, streamId, disa
             </div>
           )}
 
-          <Field label={type === "images" ? "Folder path" : "File path"} optional
+          {!essential && <><Field label={type === "images" ? "Folder path" : "File path"} optional
             hint="For a path outside the list. Relative paths start from the configuration file; ${PPE_VIDEOS_DIR} is allowed.">
             {(id) => <Input id={id} className="num" value={uri} disabled={disabled} spellCheck={false} placeholder={type === "images" ? "../data/cam5" : "../videos/cam1.mp4"}
               onChange={(e) => set("uri", e.target.value)} />}
@@ -240,7 +242,7 @@ export function SourceForm({ source, onChange, hasStoredPassword, streamId, disa
               <Switch checked={source.loop ?? true} disabled={disabled} onChange={(v) => set("loop", v)} label="Loop"
                 hint="Start again at the end. Off: the camera stops when the recording finishes." />
             </div>
-          </div>
+          </div></>}
         </>
       )}
 

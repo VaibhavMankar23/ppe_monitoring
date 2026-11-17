@@ -33,6 +33,8 @@ class Incident:
     record_gone: bool = False  # the record was deleted while the event went on: stay quiet until it ends
     ended: bool = False
     member_boxes: dict[int, Box] = field(default_factory=dict)  # last box of every merged track
+    member_seen: dict[int, float] = field(default_factory=dict)  # when each merged track's box was last seen
+    cleared: set[str] = field(default_factory=set)  # claims the evidence pass disproved: never re-added
 
 
 @dataclass
@@ -111,7 +113,7 @@ class AlertDebouncer:
             if not self._joinable(inc, now):
                 continue
             if any(iou(p.box, b) >= self.dedup_iou or _contained(p.box, b) >= self.dedup_contain
-                   for b in (inc.member_boxes or {0: inc.box}).values()):
+                   for b in self._fresh_boxes(inc, now)):
                 return inc  # the same worker(s) captured twice / as a group box
             if (inc.tracks - {p.track_id}) & visible:
                 continue  # its worker is still in view: two real people
@@ -122,9 +124,22 @@ class AlertDebouncer:
             if not recent and not (set(p.missing) & inc.missing):
                 continue
             ox, oy = (inc.box[0] + inc.box[2]) / 2, (inc.box[1] + inc.box[3]) / 2
-            if ((cx - ox) ** 2 + (cy - oy) ** 2) ** 0.5 < 0.75 * h:  # re-acquired under a new ID
+            # re-acquired under a new ID: a walking worker covers ~0.5-1 body height per second, so the
+            # allowed distance grows with the time since the event's worker was last seen (capped at
+            # 2 heights). A fixed 0.75 split one worker into two violations at 0.5 fps.
+            reach = h * min(2.0, 0.75 + 0.5 * max(0.0, now - inc.last_seen))
+            if ((cx - ox) ** 2 + (cy - oy) ** 2) ** 0.5 < reach:
                 return inc
         return None
+
+    def _fresh_boxes(self, inc: Incident, now: float) -> list[Box]:
+        """Boxes of the incident's workers seen within the last `gap` s. A departed worker's old box
+        must not keep pulling new people into the event: that merged different workers into one
+        endless violation and the newcomers were never recorded."""
+        if not inc.member_boxes:
+            return [inc.box] if now - inc.last_seen <= self.gap else []
+        return [b for t, b in inc.member_boxes.items()
+                if now - inc.member_seen.get(t, inc.last_seen) <= self.gap]
 
     def _joinable(self, inc: Incident, now: float) -> bool:
         """Still ongoing, or ended but within the cooldown of its start (a quick recurrence is the same event)."""
@@ -163,14 +178,16 @@ class AlertDebouncer:
             if inc is not None:  # the same event: extend it, never a second record
                 inc.tracks.add(tid)
                 inc.member_boxes[tid] = p.box
+                inc.member_seen[tid] = now
                 self._by_track[tid] = inc
-                inc.missing |= set(p.missing)
+                inc.missing |= set(p.missing) - inc.cleared
                 inc.box, inc.last_seen, inc.ended = p.box, now, False
                 inc.observations += 1
                 if inc not in out.extended:
                     out.extended.append(inc)
                 continue
-            inc = Incident(next(self._keys), {tid}, set(p.missing), p.box, now, now, member_boxes={tid: p.box})
+            inc = Incident(next(self._keys), {tid}, set(p.missing), p.box, now, now, member_boxes={tid: p.box},
+                           member_seen={tid: now})
             self._incidents.append(inc)
             self._by_track[tid] = inc
             best = self._best.pop(tid, (0.0, None))[1]
@@ -222,3 +239,77 @@ class AlertDebouncer:
         self._track_seen.clear()
         self._incidents.clear()
         self._by_track.clear()
+
+
+class PresenceCounter:
+    """Counts people, not tracking IDs, for the compliance figures ("workers seen", "workers flagged").
+
+    At low detection rates the tracker loses a worker behind a coil or between two frames and gives
+    them a fresh ID, so counting IDs counted one worker many times and made compliance look better
+    than it is. Here a new ID is the same person as:
+      * a person still in view whose box it (mostly) overlaps: one worker boxed twice / a group box;
+      * a person who left view at most `window` s ago, nearest to where they were last seen, within a
+        radius that grows with the time since (a walking worker moves about half a body height per
+        second; capped at `max_radius` heights so a different worker entering later is not merged).
+    Person keys are never reused within a session.
+    """
+
+    def __init__(self, window: float = 6.0, base_radius: float = 0.75, radius_per_s: float = 0.5,
+                 max_radius: float = 2.0, dedup_iou: float = 0.7, dedup_contain: float = 0.8) -> None:
+        self.window = window
+        self.base_radius, self.radius_per_s, self.max_radius = base_radius, radius_per_s, max_radius
+        self.dedup_iou, self.dedup_contain = dedup_iou, dedup_contain
+        self._person: dict[int, int] = {}  # track id -> person key
+        self._last: dict[int, tuple[Box, float]] = {}  # person key -> (last box, last seen)
+        self._counted: set[int] = set()  # person keys already counted as seen
+        self._keys = itertools.count(1)
+
+    def person(self, track_id: int) -> int | None:
+        """The person key of a track seen by `step` (None for an unknown track)."""
+        return self._person.get(track_id)
+
+    def known(self) -> set[int]:
+        """Person keys still in view or recently seen (a new track may still be matched to them)."""
+        return set(self._last)
+
+    def step(self, tracks: list[tuple[int, Box, bool]], now: float) -> int:
+        """Feed one frame: (track id, box, judged) for every person in it. Returns how many people were
+        counted for the first time (a person counts once their compliance could be judged)."""
+        visible = {self._person[t] for t, _, _ in tracks if t in self._person}
+        new = 0
+        for tid, box, judged in tracks:
+            key = self._person.get(tid)
+            if key is None:
+                key = self._match(box, now, visible) or next(self._keys)
+                self._person[tid] = key
+                visible.add(key)
+            self._last[key] = (box, now)
+            if judged and key not in self._counted:
+                self._counted.add(key)
+                new += 1
+        # people out of view longer than the window can't be matched any more: forget them
+        gone = {k for k, (_, t) in self._last.items() if now - t > self.window and k not in visible}
+        if gone:
+            for k in gone:
+                del self._last[k]
+            self._counted -= gone
+            self._person = {t: k for t, k in self._person.items() if k not in gone}
+        return new
+
+    def _match(self, box: Box, now: float, visible: set[int]) -> int | None:
+        h = max(1.0, box[3] - box[1])
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        best: tuple[float, int] | None = None
+        for key, (b, t) in self._last.items():
+            if key in visible:
+                if iou(box, b) >= self.dedup_iou or _contained(box, b) >= self.dedup_contain:
+                    return key  # the same worker captured twice in this frame
+                continue  # a different person who is in view right now
+            dt = now - t
+            if dt > self.window:
+                continue
+            radius = h * min(self.max_radius, self.base_radius + self.radius_per_s * dt)
+            d = ((cx - (b[0] + b[2]) / 2) ** 2 + (cy - (b[1] + b[3]) / 2) ** 2) ** 0.5
+            if d < radius and (best is None or d < best[0]):
+                best = (d, key)
+        return best[1] if best else None

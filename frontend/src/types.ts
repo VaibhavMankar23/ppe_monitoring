@@ -221,7 +221,7 @@ export interface BackupInfo {
 // ------------------------------------------------------------------ auth
 export type Role = "admin" | "super_admin";
 export type Permission =
-  | "monitor:view" | "streams:control" | "violations:view" | "violations:ack" | "violations:export"
+  | "monitor:view" | "streams:control" | "violations:view" | "violations:ack" | "violations:export" | "violations:export_images"
   | "violations:delete" | "analytics:view" | "config:view" | "config:cameras" | "config:system"
   | "users:manage" | "audit:view";
 
@@ -393,7 +393,9 @@ export interface EngineStats {
   frames_per_s: number;
   avg_batch: number;
   avg_call_ms: number;
+  ms_per_frame?: number; // detector time per analysed frame, person crops included
   max_batch: number;
+  refine_batch?: number;
   padded_batches: boolean;
   cameras: number;
   contended_loops: number;
@@ -422,6 +424,7 @@ export interface CameraHealth {
   reconnects: number;
   last_error: string;
   alerts_dropped: number;
+  alerts_disproved?: number;
   connected?: boolean;
   last_frame_at?: number | null; // epoch s
   last_detection_at?: number | null;
@@ -437,5 +440,5 @@ export interface SystemHealth {
   host: { cpu_percent?: number; process_cpu_percent?: number; memory_percent?: number; process_rss_mb?: number; threads?: number; cpu_count?: number };
   cameras: CameraHealth[];
   focus: FocusState;
-  capacity: { engine_utilization: number; state: "ok" | "busy" | "saturated" };
+  capacity: { engine_utilization: number; state: "ok" | "busy" | "saturated"; max_fps_per_stream?: number };
 }

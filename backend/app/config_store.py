@@ -25,7 +25,7 @@ import yaml
 from pydantic import ValidationError
 
 from .config import AppConfig, parse_config
-from .secret_box import MASK, SecretError, encrypt, is_encrypted, split_uri_credentials
+from .secret_box import MASK, SecretError, encrypt, is_encrypted, same_endpoint, split_uri_credentials
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +111,11 @@ def secure_sources(raw: dict[str, Any], current: dict[str, Any] | None) -> dict[
                     src["password"] = pw
         pw = src.get("password")
         if pw == MASK:
-            old = stored.get(s.get("id"), {}).get("password")
+            old_src = stored.get(s.get("id"), {})
+            old = old_src.get("password")
+            if old and not same_endpoint(str(src.get("uri", "")), str(old_src.get("uri", ""))):
+                raise ConfigInvalid([FieldError(f"streams.{s.get('id')}.source.password",
+                                                "The camera address changed: enter the password again. A saved password is only reused for the same camera.")])
             if old:
                 src["password"] = old
             else:

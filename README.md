@@ -6,7 +6,7 @@ with two roles (**Admin**, **Super Admin**, see [Authentication and roles](#auth
 The web app has these pages:
 
 - **Live** (`#/live`). The camera wall: every camera as the detector sees it, with who is in
-  violation right now, a live feed of the latest violations, and a per-camera detail view (video,
+  violation right now, and a per-camera detail view (video,
   zones, the workers in view and why each is flagged, start/stop, boxes, confidence).
 - **Review queue** (`#/review`). Every violation with its evidence. A reviewer marks each one
   **Valid** or **False alarm** (with a reason); verdicts feed the alert-precision figure and the
@@ -22,6 +22,19 @@ The web app has these pages:
 
 Old links (`#/dashboard`, `#/violations`, `#/config`, `#/add-camera`) redirect to the new pages.
 
+## Documentation
+
+| Document | For |
+|---|---|
+| [`SETUP.md`](SETUP.md) | **Start here:** every step to install, configure, go live, back up and upgrade |
+| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Installing on the plant server: GPU, Docker, HTTPS, first sign-in, backups, upgrades, troubleshooting |
+| [`docs/CAPACITY_PLANNING.md`](docs/CAPACITY_PLANNING.md) | How many cameras a server can check; measured numbers; sizing for 30-45 cameras |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | Security controls, the Oct 2026 review and its fixes, go-live security checklist |
+| [`docs/UAT_TEST_PLAN.md`](docs/UAT_TEST_PLAN.md) | Acceptance testing: scope, roles, entry / exit criteria, sign-off |
+| [`docs/PROJECT_WALKTHROUGH.md`](docs/PROJECT_WALKTHROUGH.md) | How the code works, file by file |
+| [`docs/design/v3-product-brief.md`](docs/design/v3-product-brief.md) | Users, jobs to be done and UI decisions |
+| [`CHANGELOG.md`](CHANGELOG.md) | What changed, and settings to apply when upgrading |
+
 ```
 backend/   FastAPI + Ultralytics YOLO + OpenCV + SQLAlchemy  (app/, config.yaml, config.default.yaml, tests/, scripts/)
 frontend/  React + Vite + Tailwind + Recharts (light theme; routes #/live #/review #/analytics #/cameras #/settings #/system #/users #/audit)
@@ -31,13 +44,9 @@ models/    PPE weights (default: models/safesight/best.pt)
 
 ## Quickstart
 
-**Windows, as set up on this machine**
+**Plant server (production):** follow [`SETUP.md`](SETUP.md), the step-by-step deployment guide.
 
-```powershell
-D:\ppe_pretrained\start.bat          # then open http://localhost:8000
-```
-
-**Docker**
+**Docker (quick trial)**
 
 ```bash
 cp .env.example .env                 # then set PPE_JWT_SECRET (compose refuses to start without it)
@@ -51,19 +60,20 @@ so they survive container rebuilds.
 **Local from scratch (Python 3.11 + Node 20+)**
 
 ```bash
-cd backend && python -m venv .venv && .venv/Scripts/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu && .venv/Scripts/pip install -r requirements.txt
-cd ../frontend && npm install && npm run build   # builds the UI into frontend/dist
-cd ../backend && .venv/Scripts/python run.py     # serves API + UI on http://localhost:8000
+cd backend && python -m venv .venv && .venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu && .venv/bin/pip install -r requirements.txt
+cd ../frontend && npm ci && npm run build        # builds the UI into frontend/dist
+cd ../backend && .venv/bin/python run.py         # serves API + UI on http://localhost:8000 (Windows: .venv\Scripts\python)
 ```
 
 ### First sign-in
 
-> ⚠️ **Default account: change this in production.** On the very first start (empty `users`
-> table) the server creates **`admin` / `mahindra123`** with the **Super Admin** role and logs a
-> `SECURITY:` warning. That password is public (it's in this README). The first sign-in is forced
-> onto a "Set a new password" screen that can't be skipped, and the server refuses every other API
-> call until the password is changed. The seed never runs again once any user exists. Do the first
-> sign-in yourself right after installing, before the app is reachable by anyone else.
+> ⚠️ **First account.** On the very first start (empty `users` table) the server creates the user
+> **`admin`** with the **Super Admin** role. Its password is `PPE_INITIAL_ADMIN_PASSWORD` if you set
+> that variable, otherwise a **random one-time password printed once in the server log** (the
+> `SECURITY:` line; `docker compose logs ppe-monitor | grep SECURITY`). There is no published
+> default password any more. The first sign-in is forced onto a "Set a new password" screen that
+> can't be skipped, and the server refuses every other API call until the password is changed. The
+> seed never runs again once any user exists.
 
 Set **`PPE_JWT_SECRET`** (a long random string: `python -c "import secrets; print(secrets.token_urlsafe(48))"`)
 in `backend/.env` (local run) or `.env` (docker compose). Without it, the server signs tokens with
@@ -483,7 +493,7 @@ Performance section trades accuracy for speed: frame skip, downscale width, clos
 ## Tests
 
 ```bash
-cd backend && ..\backend_venv311\Scripts\python.exe -m pytest -q   # 236 tests
+cd backend && python -m pytest -q                                # 307 tests
 python scripts/headless_check.py --seconds 30                     # full pipeline, in-memory DB; --persist to use the real DB
 python scripts/load_test.py --counts 4 8 12                       # N-camera throughput / latency / engine load
 ```
@@ -504,9 +514,16 @@ python scripts/load_test.py --counts 4 8 12                       # N-camera thr
 | `test_auth.py` | seed user (once, idempotent, warning logged), login errors look identical, throttling, forced password change blocks everything else, token version revocation, refresh rotation / reuse detection / logout / remember me, expired and forged tokens, **every `/api` route rejects anonymous calls**, WebSocket + MJPEG token rules, Admin denied on every Super Admin endpoint, Admin config limited to camera fields, audit before/after, user-management guard rails, open WebSocket closed on revocation |
 | `test_analytics.py` | summary / previous period, `json_each` PPE counts, per-camera incl. idle cameras, day buckets in the viewer's time zone, hourly buckets, heatmap cells, session-aware offenders, camera filter, acknowledgements, HTTP params + range validation, in-place migration of an old database |
 | `test_config_diff.py` | per-field diff keyed by camera id, Admin edit policy |
-| `test_observations.py` | the pipeline counts each worker once and tags violations with the camera session |
+| `test_observations.py` | the pipeline counts each worker once (also when re-acquired under a new track ID) and tags violations with the camera session |
+| `test_camera_order.py` | cameras listed in the configured order, also after a settings change reorders or adds cameras |
+| `test_low_fps.py` | a camera getting a frame only every 2.5 s: a walking worker keeps one ID, two workers crossing keep their own, a violation is still confirmed, a worker re-tracked under a new ID stays one violation |
+| `test_person_detector.py` | tiled person detection: tile overlap, boxes mapped back to the frame, one worker on a tile seam counted once while two close workers stay two, person boxes from both models merged, crop passes use the PPE model only |
+| `test_verification.py` | sharp-pass claim verification (own helmet clears, a neighbour's does not, weak or outvoted positives do not), per-item minimum worker size, cleared items never re-added in the event |
+| `test_presence.py` | people counting for compliance: hand-off after an occlusion, two people side by side, a second box on one worker, someone far away, radius growing with time lost, forgetting after the window, counting only once judged |
 | `test_box_alignment.py` | synthetic frame with a known worker: snapshot outline, alert-time evidence re-detection, stored snapshot, live crop-pass box, phantom alerts, confident-box wait (fails by 27–41 px without the fix) |
 | `test_sources.py` | source registry, encrypted credentials (never stored / returned in plain text), HTTP MJPEG / snapshot / Basic auth against a real local HTTP server, connection test, grabber drops / reconnects / offline |
+| `test_security.py` | Oct 2026 review fixes: no file reads outside the UI build, no env-var leaks through camera addresses, stored camera passwords only for the same camera, protocol / folder limits on connection tests, no public first password, CSV formula escaping, security headers, alarm credentials hidden from Admins, photo export Super Admin only |
+| `test_gpu.py` | NVIDIA path with a simulated GPU: automatic batch sizes per device, TensorRT engine build / cache / naming, PyTorch fallback when the build fails, when the engine will not load, and for image sizes beyond the engine |
 | `test_scaling.py` | scheduler priority + fairness + batch cap, low-priority rate, one frame in flight, GPU batch padding, bounded thread pool, focus mode + lease expiry, upload / list / test endpoints, health, WebSocket video multiplexing, Admin camera password never returned |
 
 ## Operational notes
@@ -516,7 +533,7 @@ python scripts/load_test.py --counts 4 8 12                       # N-camera thr
 - **Reconnects:** RTSP/HTTP retry with backoff (2 s → 30 s); credentials are masked in logs.
   When a config reload restarts a camera, its MJPEG connection closes and the browser reconnects
   automatically.
-- **Security:** sign-in is required everywhere (see above). Still: change the seed password at
-  once, set `PPE_JWT_SECRET`, and serve over HTTPS (a TLS reverse proxy; set
-  `PPE_COOKIE_SECURE=true` behind it) outside a trusted LAN. `/api/health` stays public for the
+- **Security:** sign-in is required everywhere (see above). Set `PPE_JWT_SECRET` and
+  `PPE_SECRET_KEY`, and serve over HTTPS with `deploy/docker-compose.https.yml` (it sets
+  `PPE_COOKIE_SECURE=true` and `PPE_TRUSTED_PROXIES`). Full checklist: [`docs/SECURITY.md`](docs/SECURITY.md). `/api/health` stays public for the
   docker health check and reveals only the device and camera count.
