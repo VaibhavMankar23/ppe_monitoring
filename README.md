@@ -31,9 +31,6 @@ Old links (`#/dashboard`, `#/violations`, `#/config`, `#/add-camera`) redirect t
 | [`docs/CAPACITY_PLANNING.md`](docs/CAPACITY_PLANNING.md) | How many cameras a server can check; measured numbers; sizing for 30-45 cameras |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Security controls, the Oct 2026 review and its fixes, go-live security checklist |
 | [`docs/UAT_TEST_PLAN.md`](docs/UAT_TEST_PLAN.md) | Acceptance testing: scope, roles, entry / exit criteria, sign-off |
-| [`docs/testing/PPE_Monitor_UAT_Test_Cases.xlsx`](docs/testing/PPE_Monitor_UAT_Test_Cases.xlsx) | The 76 UAT test cases for manual testers, with the defect log |
-| [`docs/testing/UAT_RUN_REPORT_2026-10-29.md`](docs/testing/UAT_RUN_REPORT_2026-10-29.md) | Results of the first automated UAT run |
-| [`docs/testing/uat/`](docs/testing/uat/README.md) | The automated UAT suite and how to re-run it |
 | [`docs/PROJECT_WALKTHROUGH.md`](docs/PROJECT_WALKTHROUGH.md) | How the code works, file by file |
 | [`docs/design/v3-product-brief.md`](docs/design/v3-product-brief.md) | Users, jobs to be done and UI decisions |
 | [`CHANGELOG.md`](CHANGELOG.md) | What changed, and settings to apply when upgrading |

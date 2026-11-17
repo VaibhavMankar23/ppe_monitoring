@@ -214,3 +214,27 @@ def test_a_worker_walking_past_behind_is_not_merged_when_boxes_only_touch():
     d = AlertDebouncer(min_frames=1, min_seconds=0, cooldown=30)
     a, b = (100.0, 100.0, 160.0, 280.0), (140.0, 100.0, 200.0, 280.0)  # a third of either box overlaps
     assert len(d.update([worker(1, ["helmet"], a), worker(2, ["helmet"], b)], 0.0)) == 2
+
+
+def test_a_departed_workers_old_box_does_not_pull_new_workers_into_the_event():
+    """Issue #29: every merged track's box was kept for the event's whole life. A group box seen once
+    at the start kept absorbing every new non-compliant worker at that spot, so one event ran for
+    minutes and those workers were never recorded."""
+    d = AlertDebouncer(min_frames=1, min_seconds=0, cooldown=30, gap=10)
+    group = (90.0, 90.0, 240.0, 290.0)  # one box around worker A and a colleague, seen at t=0 only
+    fired = run(d, [(0.0, [worker(1, ["helmet"], HERE), worker(2, ["helmet"], group)])])
+    assert fired == [(0.0, [1])]  # the group box joined A's event
+    # A stays non-compliant but walks away: the event goes on for 10 minutes
+    fired = run(d, [(float(t), [worker(1, ["helmet"], THERE)]) for t in range(1, 600)])
+    assert fired == []
+    # a new worker, B, stands inside the old group box 10 minutes later: a new violation
+    b = (170.0, 100.0, 230.0, 280.0)
+    assert run(d, [(600.0, [worker(1, ["helmet"], THERE), worker(3, ["helmet"], b)])]) == [(600.0, [3])]
+
+
+def test_a_recent_members_box_still_joins_the_event():
+    """The fix for #29 must not undo the double-capture rule: a box inside a member seen moments ago joins."""
+    d = AlertDebouncer(min_frames=1, min_seconds=0, cooldown=30, gap=10)
+    group = (90.0, 90.0, 240.0, 290.0)
+    assert run(d, [(0.0, [worker(2, ["helmet"], group)])]) == [(0.0, [2])]
+    assert run(d, [(t * 1.0, [worker(2, ["helmet"], group), worker(5, ["helmet"], HERE)]) for t in range(1, 5)]) == []

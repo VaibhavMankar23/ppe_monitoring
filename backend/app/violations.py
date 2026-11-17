@@ -33,6 +33,7 @@ class Incident:
     record_gone: bool = False  # the record was deleted while the event went on: stay quiet until it ends
     ended: bool = False
     member_boxes: dict[int, Box] = field(default_factory=dict)  # last box of every merged track
+    member_seen: dict[int, float] = field(default_factory=dict)  # when each merged track's box was last seen
     cleared: set[str] = field(default_factory=set)  # claims the evidence pass disproved: never re-added
 
 
@@ -112,7 +113,7 @@ class AlertDebouncer:
             if not self._joinable(inc, now):
                 continue
             if any(iou(p.box, b) >= self.dedup_iou or _contained(p.box, b) >= self.dedup_contain
-                   for b in (inc.member_boxes or {0: inc.box}).values()):
+                   for b in self._fresh_boxes(inc, now)):
                 return inc  # the same worker(s) captured twice / as a group box
             if (inc.tracks - {p.track_id}) & visible:
                 continue  # its worker is still in view: two real people
@@ -130,6 +131,15 @@ class AlertDebouncer:
             if ((cx - ox) ** 2 + (cy - oy) ** 2) ** 0.5 < reach:
                 return inc
         return None
+
+    def _fresh_boxes(self, inc: Incident, now: float) -> list[Box]:
+        """Boxes of the incident's workers seen within the last `gap` s. A departed worker's old box
+        must not keep pulling new people into the event: that merged different workers into one
+        endless violation and the newcomers were never recorded."""
+        if not inc.member_boxes:
+            return [inc.box] if now - inc.last_seen <= self.gap else []
+        return [b for t, b in inc.member_boxes.items()
+                if now - inc.member_seen.get(t, inc.last_seen) <= self.gap]
 
     def _joinable(self, inc: Incident, now: float) -> bool:
         """Still ongoing, or ended but within the cooldown of its start (a quick recurrence is the same event)."""
@@ -168,6 +178,7 @@ class AlertDebouncer:
             if inc is not None:  # the same event: extend it, never a second record
                 inc.tracks.add(tid)
                 inc.member_boxes[tid] = p.box
+                inc.member_seen[tid] = now
                 self._by_track[tid] = inc
                 inc.missing |= set(p.missing) - inc.cleared
                 inc.box, inc.last_seen, inc.ended = p.box, now, False
@@ -175,7 +186,8 @@ class AlertDebouncer:
                 if inc not in out.extended:
                     out.extended.append(inc)
                 continue
-            inc = Incident(next(self._keys), {tid}, set(p.missing), p.box, now, now, member_boxes={tid: p.box})
+            inc = Incident(next(self._keys), {tid}, set(p.missing), p.box, now, now, member_boxes={tid: p.box},
+                           member_seen={tid: now})
             self._incidents.append(inc)
             self._by_track[tid] = inc
             best = self._best.pop(tid, (0.0, None))[1]
