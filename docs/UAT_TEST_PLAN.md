@@ -2,13 +2,6 @@
 
 User acceptance testing before go-live at plant scale (30-45 cameras).
 
-| | |
-|---|---|
-| Test cases | [`testing/PPE_Monitor_UAT_Test_Cases.xlsx`](testing/PPE_Monitor_UAT_Test_Cases.xlsx) (76 cases, 43 of them P1) |
-| First automated run | [`testing/UAT_RUN_REPORT_2026-10-29.md`](testing/UAT_RUN_REPORT_2026-10-29.md): 52 run, 52 passed, 24 left for manual testing |
-| Automated suite | [`testing/uat/`](testing/uat/README.md) |
-| Defects | the **Defects** sheet of the workbook |
-
 ## 1. Scope
 
 **In scope:** sign-in and accounts, roles and permissions, Command, Live, Review, Insights,
@@ -40,10 +33,10 @@ not touch.
 
 ## 4. Entry criteria
 
-1. Build deployed from the release branch; all 307 backend tests pass (`cd backend && pytest -q`).
+1. Build deployed from the release branch; all backend tests pass (`cd backend && pytest -q`).
 2. HTTPS working with the plant certificate (SEC-06).
 3. Test cameras added and live on System health.
-4. Testers have accounts and a copy of the workbook.
+4. Testers have accounts and a copy of the UAT test-case workbook (shared separately with the test team).
 
 ## 5. How to execute
 
@@ -52,9 +45,7 @@ not touch.
    Tester status, Actual result, Tester, Test date, Defect ID, Comments.
 3. Every **Fail** gets a row in **Defects** (severity, steps, expected, actual), and its Defect ID
    goes on the test case.
-4. Cases marked *Automated + manual* already passed in Claude's run on the development laptop.
-   Re-test them by hand on the production setup: the environment differs.
-5. When a defect is fixed, re-run the case and record the retest result in **Defects**.
+4. When a defect is fixed, re-run the case and record the retest result in **Defects**.
 
 ## 6. Severity of defects
 

@@ -110,6 +110,7 @@ class StreamWorker:
         self.behaviors = ["phone_use"] if cfg.detect_phone else []  # behavioural checks for this camera
         self.zones = [Zone(z.name, z.type, tuple(z.points)) for z in cfg.zones]
         self._detectable: set[str] | None = None  # PPE items this model can actually judge (set once ready)
+        self._learned_from: Detector | None = None  # detector _detectable / _live_behaviors were learned from
         self._live_behaviors: list[str] = self.behaviors  # behaviours the loaded model can actually see
         self.confidence = cfg.confidence if cfg.confidence is not None else app_cfg.model.default_confidence
         self.show_boxes = True
@@ -290,19 +291,22 @@ class StreamWorker:
         persons = drop_group_boxes([d for d in dets if d.cls == "person"])
         ppe = [d for d in dets if d.cls != "person" and d.conf >= conf]
         tracked = self.tracker.update(persons, frame.ts, high_thresh=conf)
-        if self._detectable is None:  # learn what the loaded model can judge, once it's ready
-            det = self._detector()
-            if det is not None:
-                self._detectable = detectable_items(det.classes)
-                blind = [i for i in self.required if i not in self._detectable]
-                if blind:
-                    log.warning("[%s] required PPE the model cannot detect (not enforced): %s "
-                                "- remove these from the camera's required PPE, or use a model that detects them.",
-                                self.id, ", ".join(blind))
-                self._live_behaviors = [b for b in self.behaviors if BEHAVIOR_CLASS[b] in det.classes]
-                if len(self._live_behaviors) < len(self.behaviors):
-                    log.warning("[%s] phone-use detection is on but no phone model is loaded (not enforced) "
-                                "- set model.phone_weights, e.g. ../models/coco/yolov8n.pt", self.id)
+        # Learn what the loaded model can judge once it's ready, and again whenever a hot reload swaps the
+        # detector (e.g. a phone model added in Settings): learning only once left phone use unchecked
+        # until a restart while the UI said it was checked.
+        det = self._detector()
+        if det is not None and det is not self._learned_from:
+            self._learned_from = det
+            self._detectable = detectable_items(det.classes)
+            blind = [i for i in self.required if i not in self._detectable]
+            if blind:
+                log.warning("[%s] required PPE the model cannot detect (not enforced): %s "
+                            "- remove these from the camera's required PPE, or use a model that detects them.",
+                            self.id, ", ".join(blind))
+            self._live_behaviors = [b for b in self.behaviors if BEHAVIOR_CLASS[b] in det.classes]
+            if len(self._live_behaviors) < len(self.behaviors):
+                log.warning("[%s] phone-use detection is on but no phone model is loaded (not enforced) "
+                            "- set model.phone_weights, e.g. ../models/coco/yolov8n.pt", self.id)
         people = evaluate_frame(
             tracked, ppe, self.required,
             behaviors=self._live_behaviors,

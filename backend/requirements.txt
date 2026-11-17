@@ -13,6 +13,7 @@ PyJWT>=2.8            # access tokens
 cryptography>=42      # camera passwords encrypted at rest
 python-multipart>=0.0.9  # video upload
 psutil>=5.9           # system health page
+requests>=2.31         # HTTP cameras (MJPEG / snapshot) and webhook alarms
 openvino>=2024.0      # Intel CPU/iGPU acceleration (optional; auto-used when no CUDA)
 fastapi>=0.110
 uvicorn[standard]>=0.29

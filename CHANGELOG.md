@@ -6,6 +6,15 @@ All notable changes to the PPE Compliance Monitor. Dates are IST.
 
 Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and acceptance testing.
 
+### Live camera testing fixes
+- **Fixed (high, issue #29):** different workers were merged into one long violation event, so
+  violations were missed. An event now matches new workers only against boxes of its workers seen
+  within `alerts.event_gap_seconds`, not every box it ever had.
+- **Fixed (high, issue #30):** enabling the phone model needed a restart before phone use was
+  actually checked. Cameras now re-learn what the model can detect whenever it is reloaded.
+- **Fixed:** `requests` (HTTP cameras, webhook alarms) is now listed in `backend/requirements.txt`
+  instead of arriving only as a dependency of `ultralytics`.
+
 ### Security
 - **Fixed (critical):** an encoded `../` in a URL let anyone download server files without
   signing in. The UI route now serves only files inside the built UI folder.
@@ -161,8 +170,8 @@ Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and a
 - **Fixed:** 9 backend tests that failed because their fixed-date data aged past the 30-day
   retention. 307 tests pass (11 security, 13 GPU, 8 people-counting, 16 accuracy, decoding and low-frame-rate tests, 1 camera-order test, 1 on-demand encoding test).
 - **Resolved:** DEF-001 ('Compliance today' showing '-').
-- **Added:** UAT pack (`docs/testing/PPE_Monitor_UAT_Test_Cases.xlsx`, 76 cases), automated UAT
-  suite (`docs/testing/uat/`), first run report (52 of 52 passed).
+- **Added:** UAT pack (76 cases), automated UAT suite, first run report (52 of 52 passed). Kept
+  internal: not part of the client release.
 - **Added:** `docs/DEPLOYMENT.md`, `docs/SECURITY.md`, `docs/CAPACITY_PLANNING.md`,
   `docs/UAT_TEST_PLAN.md`, HTTPS deployment files in `deploy/`.
 
