@@ -365,6 +365,9 @@ cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
+# NVIDIA GPU instead: torch from the cu124 index (not cpu), then also the TensorRT packages:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#   pip install -r requirements.txt -r requirements-gpu.txt
 echo "PPE_JWT_SECRET=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" > .env
 echo "PPE_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" >> .env
 

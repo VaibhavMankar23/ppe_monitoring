@@ -1,0 +1,12 @@
+# NVIDIA GPU servers only: what the one-time TensorRT engine build needs (on top of requirements.txt).
+# Without these the first start tries to pip-install them itself (slow, and the build then needs a restart),
+# or runs the slower PyTorch model (log: "model best.pt on cuda:0" instead of "...engine on cuda:0").
+#
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#   pip install -r requirements.txt -r requirements-gpu.txt
+#
+# The Docker image installs this file when built with TORCH_INDEX=cu124 (or any cu*).
+tensorrt-cu12>=10,!=10.2.0,<11   # 10.2.0 excluded, as Ultralytics does
+onnx>=1.12,<2
+onnxslim>=0.1.82
+onnxruntime-gpu

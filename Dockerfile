@@ -31,12 +31,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/backend
-COPY backend/requirements.txt .
+COPY backend/requirements.txt backend/requirements-gpu.txt ./
 RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/${TORCH_INDEX} \
  && pip install -r requirements.txt
 # NVIDIA builds (TORCH_INDEX=cu*): what the one-time TensorRT engine build needs. Installed here because
 # the container runs as a non-root user and cannot pip-install at runtime.
-RUN case "${TORCH_INDEX}" in cu*) pip install "tensorrt-cu12>=10,!=10.2.0,<11" "onnx>=1.12,<2" "onnxslim>=0.1.82" onnxruntime-gpu ;; esac
+RUN case "${TORCH_INDEX}" in cu*) pip install -r requirements-gpu.txt ;; esac
 
 COPY backend/ ./
 COPY --from=frontend /frontend/dist /app/frontend/dist
