@@ -366,14 +366,20 @@ python -m venv .venv && source .venv/bin/activate
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 echo "PPE_JWT_SECRET=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" > .env
+echo "PPE_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" >> .env
 
-# frontend
+# frontend (required: without it the page at :8000 answers 404, only the API runs)
 cd ../frontend && npm ci && npm run build      # dashboard into frontend/dist
 
 # run
 cd ../backend && python run.py                 # http://localhost:8000
 pytest -q                                      # backend tests
 ```
+
+`backend/config.yaml` (settings and cameras) is not in the repository. On the first `python run.py`
+it is created from `backend/config.default.yaml`, also when the file exists but is empty. The
+one-time `admin` password is printed in the log (`SECURITY:` line) unless `PPE_INITIAL_ADMIN_PASSWORD`
+is set in `backend/.env`.
 
 For UI work with live reload, run `npm run dev` in `frontend/` (port 5173; it proxies `/api` and
 `/ws` to port 8000).

@@ -749,5 +749,8 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
             # the server decodes %2e%2e%2f to "../" before routing: only files inside the build folder
             f = (static / path).resolve()
             return FileResponse(f if path and f.is_relative_to(static) and f.is_file() else static / "index.html")
+    else:
+        log.warning("dashboard not built: %s has no index.html, so only the API is served (the page shows 404). "
+                    "Build it: cd frontend && npm ci && npm run build", static)
 
     return app
