@@ -24,6 +24,7 @@ from pydantic import BaseModel, ValidationError
 
 from .auth import ApiError, client_ip, ctx, require
 from .config import STREAM_ENV_VARS, SourceConfig, expand_env
+from .config_store import lift_uri_credentials
 from .secret_box import MASK, same_endpoint
 from .sources import IMAGE_EXTS, VIDEO_EXTS, probe
 from .users_db import User
@@ -57,6 +58,7 @@ def _uri_for(name: str) -> str:
 
 def _resolve_source(request: Request, raw: dict[str, Any], stream_id: str | None) -> SourceConfig:
     raw = dict(raw)
+    lift_uri_credentials(raw)  # a password in the URL is tested as typed, not swapped for the stored one
     if raw.get("password") == MASK:
         stored = next((s.get("source", {}) for s in request.app.state.config_store.read_raw().get("streams", [])
                        if isinstance(s, dict) and s.get("id") == stream_id), {})

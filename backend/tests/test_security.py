@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 from app.api import create_app
 from app.config import load_config
 from app.pipeline import Monitor
-from app.secret_box import MASK
+import yaml
+
+from app.secret_box import MASK, decrypt
 from app.violations_db import ViolationStore
 from helpers import FakeDetector, auth_settings, bearer, bootstrap_super_admin, create_admin, raw_config, write_config
 
@@ -113,6 +115,35 @@ def test_stored_camera_password_is_only_reused_for_the_same_camera(env, monkeypa
     # same camera, different path: the stored password is kept
     cfg["streams"][0]["source"]["uri"] = "rtsp://10.0.0.5/sub"
     assert env.put("/api/config", headers=adm, json={"config": cfg, "etag": doc["etag"]}).status_code == 200
+
+
+def test_a_password_typed_into_the_url_replaces_the_stored_one(env, monkeypatch):
+    """Pasting a working camera link (user:pass@) must use that password, even while the form shows
+    "Stored" and even for a new camera address: the terminal-works-app-doesn't trap from site testing."""
+    monkeypatch.setenv("PPE_SECRET_KEY", "unit-test-key")
+    sup = bearer(env.tokens["super"])
+    doc = env.get("/api/config", headers=sup).json()
+    cfg = doc["config"]
+    cfg["streams"][0]["source"] = {"type": "rtsp", "uri": "rtsp://10.0.0.5/live", "username": "cam", "password": "old"}
+    assert env.put("/api/config", headers=sup, json={"config": cfg, "etag": doc["etag"]}).status_code == 200
+
+    adm = bearer(env.tokens["admin"])
+    seen: list[tuple[str, str]] = []
+    import app.sources_routes as routes
+    monkeypatch.setattr(routes, "probe", lambda src, width: (seen.append((src.uri, src.password)), {"ok": False, "source": "x", "message": "stub"})[1])
+    r = env.post("/api/sources/test", headers=adm, json={"stream_id": "cam1", "source": {
+        "type": "rtsp", "uri": "rtsps://admin:n%40w@10.9.9.9:554/video/live?channel=1", "username": "cam", "password": MASK}})
+    assert r.status_code == 200
+    assert seen == [("rtsps://10.9.9.9:554/video/live?channel=1", "n@w")]
+
+    doc = env.get("/api/config", headers=adm).json()
+    cfg = doc["config"]
+    cfg["streams"][0]["source"]["uri"] = "rtsps://admin:n%40w@10.9.9.9:554/video/live?channel=1"
+    assert cfg["streams"][0]["source"]["password"] == MASK
+    assert env.put("/api/config", headers=adm, json={"config": cfg, "etag": doc["etag"]}).status_code == 200
+    src = yaml.safe_load(env.app.state.config_store.read_text())["streams"][0]["source"]
+    assert src["uri"] == "rtsps://10.9.9.9:554/video/live?channel=1" and src["username"] == "admin"
+    assert decrypt(src["password"]) == "n@w"
 
 
 def test_first_account_never_gets_the_public_password(tmp_path, monkeypatch, caplog):

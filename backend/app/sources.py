@@ -111,11 +111,13 @@ class StreamSource:
     # credentials, decrypted only here, at open time
     def _credentials(self) -> tuple[str, str]:
         base, u, p = split_uri_credentials(self.cfg.uri)
+        if u is not None:  # credentials in the URL win, as when the camera is saved (lift_uri_credentials)
+            return u, p or ""
         try:
-            password = decrypt(self.cfg.password) if self.cfg.password else (p or "")
+            password = decrypt(self.cfg.password) if self.cfg.password else ""
         except SecretError as e:
             raise SourceError(str(e)) from e
-        return (self.cfg.username or u or ""), password
+        return (self.cfg.username or ""), password
 
 
 class _OpenCVSource(StreamSource):

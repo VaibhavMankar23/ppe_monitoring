@@ -85,10 +85,27 @@ def _line_of(text: str, loc: str) -> int | None:
     return line
 
 
+def lift_uri_credentials(src: dict[str, Any]) -> None:
+    """``rtsp://user:pass@host/x`` -> uri ``rtsp://host/x`` plus ``username`` / ``password``, in place.
+    Credentials typed into the URL win over the form fields: someone who pastes a working camera
+    link expects that password to be used, not an older stored one (which may be for another camera)."""
+    uri = src.get("uri")
+    if not (isinstance(uri, str) and "@" in uri and "://" in uri):
+        return
+    base, user, pw = split_uri_credentials(uri)
+    if user is None:
+        return
+    src["uri"] = base
+    src["username"] = user
+    if pw is not None:
+        src["password"] = pw
+
+
 def secure_sources(raw: dict[str, Any], current: dict[str, Any] | None) -> dict[str, Any]:
     """Camera credentials never reach the file in plain text.
 
-    * ``rtsp://user:pass@host`` in a URI is moved into ``source.username`` / ``source.password``;
+    * ``rtsp://user:pass@host`` in a URI is moved into ``source.username`` / ``source.password``
+      (replacing what the form held, a stored password included);
     * a plain password is encrypted (``enc:...``);
     * ``MASK`` (what the UI shows for a stored password) means "unchanged": the stored value is kept.
     Returns a new mapping; `raw` is not modified.
@@ -101,14 +118,7 @@ def secure_sources(raw: dict[str, Any], current: dict[str, Any] | None) -> dict[
         src = s.get("source") if isinstance(s, dict) else None
         if not isinstance(src, dict):
             continue
-        uri = src.get("uri")
-        if isinstance(uri, str) and "@" in uri and "://" in uri:
-            base, user, pw = split_uri_credentials(uri)
-            if user is not None:
-                src["uri"] = base
-                src.setdefault("username", user)
-                if pw is not None and not src.get("password"):
-                    src["password"] = pw
+        lift_uri_credentials(src)
         pw = src.get("password")
         if pw == MASK:
             old_src = stored.get(s.get("id"), {})

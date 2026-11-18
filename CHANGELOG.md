@@ -14,6 +14,9 @@ Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and a
   actually checked. Cameras now re-learn what the model can detect whenever it is reloaded.
 - **Fixed:** `requests` (HTTP cameras, webhook alarms) is now listed in `backend/requirements.txt`
   instead of arriving only as a dependency of `ultralytics`.
+- **Fixed:** a password typed into the camera URL (`rtsp://user:pass@host/...`) was ignored while the
+  form held a stored password, so a link that worked in a terminal failed in the app. Credentials in
+  the URL now replace the stored ones, for Test connection and on save.
 
 ### Security
 - **Fixed (critical):** an encoded `../` in a URL let anyone download server files without
