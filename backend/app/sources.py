@@ -42,11 +42,14 @@ OFFLINE_AFTER = 30.0  # s without frames (while retrying) before "reconnecting" 
 
 # FFmpeg options for every capture: TCP for RTSP (UDP drops packets over Wi-Fi / VPN), and the decoder
 # thread count (see inference.decode_threads). OpenCV reads this variable each time a capture opens.
-os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+# tls_verify;0: IP cameras serve rtsps:// with a self-signed certificate, which FFmpeg rejects by default
+# (the same as `ffplay -tls_verify 0`). It only affects TLS URLs; plain rtsp:// / http:// are unchanged.
+_BASE_FFMPEG_OPTIONS = "rtsp_transport;tcp|tls_verify;0"
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = _BASE_FFMPEG_OPTIONS
 
 
 def set_decode_threads(n: int) -> None:
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp" + (f"|threads;{n}" if n > 0 else "")
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = _BASE_FFMPEG_OPTIONS + (f"|threads;{n}" if n > 0 else "")
 
 
 @dataclass
