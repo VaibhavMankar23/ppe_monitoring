@@ -17,6 +17,8 @@ Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and a
 - **Fixed:** a password typed into the camera URL (`rtsp://user:pass@host/...`) was ignored while the
   form held a stored password, so a link that worked in a terminal failed in the app. Credentials in
   the URL now replace the stored ones, for Test connection and on save.
+- **Added:** `docker-compose.gpu.yml` gives the container the NVIDIA GPU (add it to `COMPOSE_FILE`
+  in `.env`), instead of uncommenting a block in `docker-compose.yml`.
 
 ### Security
 - **Fixed (critical):** an encoded `../` in a URL let anyone download server files without

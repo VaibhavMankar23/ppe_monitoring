@@ -39,11 +39,4 @@ services:
     # devices:
     #   - /dev/dri:/dev/dri
 
-    # --- NVIDIA GPU: build with TORCH_INDEX=cu124 and uncomment ---
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    # --- NVIDIA GPU: add docker-compose.gpu.yml (see that file) and build with TORCH_INDEX=cu124 ---

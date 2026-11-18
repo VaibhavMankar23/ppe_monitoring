@@ -99,6 +99,8 @@ TORCH_INDEX=cu124                           # NVIDIA build of PyTorch + TensorRT
 
 # --- so every `docker compose` command uses HTTPS (recommended) ---
 COMPOSE_FILE=docker-compose.yml:deploy/docker-compose.https.yml
+# GPU server: add the GPU file too (step 3.3)
+# COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:deploy/docker-compose.https.yml
 ```
 
 > `.env` holds secrets. Restrict it: `chmod 600 .env`. Never commit or e-mail it.
@@ -130,19 +132,16 @@ sudo chown -R 1000:1000 config data videos models      # use your PPE_UID:PPE_GI
    docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
    ```
 
-2. In `docker-compose.yml`, uncomment the block at the end of the service:
+2. Add `docker-compose.gpu.yml` (it gives the container the GPU) to `COMPOSE_FILE` in `.env`, and
+   set `TORCH_INDEX=cu124`:
 
-   ```yaml
-       deploy:
-         resources:
-           reservations:
-             devices:
-               - driver: nvidia
-                 count: all
-                 capabilities: [gpu]
+   ```bash
+   TORCH_INDEX=cu124
+   COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:deploy/docker-compose.https.yml
+   # without the HTTPS proxy (local test): COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
    ```
 
-**Intel CPU/iGPU pilot instead:** leave the NVIDIA block commented and `TORCH_INDEX` unset. For the
+**Intel CPU/iGPU pilot instead:** leave `docker-compose.gpu.yml` out and `TORCH_INDEX` unset. For the
 Intel iGPU, uncomment the `devices: - /dev/dri:/dev/dri` block.
 
 ### 3.4 HTTPS certificate
@@ -342,7 +341,7 @@ delete `models/safesight/*.engine` and `models/safesight/*_openvino_model/`, the
 | `set PPE_JWT_SECRET in .env` on `docker compose up` | `.env` missing or `PPE_JWT_SECRET` empty (step 3.1) |
 | `env_file ... required` error | Docker Compose older than v2.24: upgrade it |
 | Container restarts with `Permission denied` on `/app/config` or `/app/data` | Folders not owned by `PPE_UID:PPE_GID`: `sudo chown -R 1000:1000 config data videos models`. If you changed `PPE_UID`/`PPE_GID` after the first build, rebuild: `docker compose up -d --build` |
-| Log says `intel:cpu` on the GPU server | NVIDIA block not uncommented, image not built with `TORCH_INDEX=cu124`, or Container Toolkit missing (3.3). Rebuild with `docker compose up -d --build` |
+| Log says `intel:cpu` on the GPU server | `docker-compose.gpu.yml` not in `COMPOSE_FILE`, image not built with `TORCH_INDEX=cu124`, or Container Toolkit missing (3.3). Rebuild with `docker compose up -d --build` |
 | Log says `model best.pt on cuda:0` (no `.engine`) | TensorRT build failed: read the log lines above. Works, 2-3x slower |
 | `TensorRT engine ... failed to load` | Engine built for another GPU/TensorRT: `rm models/safesight/*.engine`, restart |
 | Browser certificate warning | Using `tls internal`: install Caddy's root CA on the PCs or use the plant certificate (3.4) |

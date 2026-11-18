@@ -1,0 +1,17 @@
+# NVIDIA GPU server: gives the container the GPU. Use together with docker-compose.yml, and build the
+# image with TORCH_INDEX=cu124 (CUDA PyTorch + TensorRT). Easiest: put both in .env
+#
+#   TORCH_INDEX=cu124
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
+#   # with HTTPS: COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:deploy/docker-compose.https.yml
+#
+# then `docker compose up -d --build`. Needs the NVIDIA Container Toolkit (SETUP.md 3.3).
+services:
+  ppe-monitor:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
