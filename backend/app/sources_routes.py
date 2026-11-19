@@ -78,6 +78,16 @@ def _resolve_source(request: Request, raw: dict[str, Any], stream_id: str | None
     return src
 
 
+def _is_video(path: Path) -> bool:
+    import cv2
+
+    cap = cv2.VideoCapture(str(path))
+    try:
+        return bool(cap.isOpened())
+    finally:
+        cap.release()
+
+
 def build_router() -> APIRouter:
     r = APIRouter()
 
@@ -126,7 +136,7 @@ def build_router() -> APIRouter:
                 n += 1
             name = f"{stem}_{n}{ext}"
             dest = root / name
-        tmp = dest.with_name(f".{name}.{int(time.time())}.part")
+        tmp = dest.with_name(f".{int(time.time())}.part{ext}")  # keeps the extension: some formats are detected by it
         size, limit = 0, MAX_UPLOAD_MB * 2**20
         try:
             with open(tmp, "wb") as f:
@@ -135,6 +145,11 @@ def build_router() -> APIRouter:
                     if size > limit:
                         raise ApiError(413, f"File is larger than {MAX_UPLOAD_MB} MB.", "too_large")
                     f.write(chunk)
+            if size == 0:
+                raise ApiError(422, "The file is empty.", "empty_file")
+            if not await asyncio.to_thread(_is_video, tmp):
+                raise ApiError(422, "This file is not a video the server can read (damaged, or an unsupported codec). "
+                                    "Export it again from the recorder, or choose another file.", "unreadable_video")
             os.replace(tmp, dest)
         except OSError as e:  # read-only mount, permissions, disk full: say so instead of a bare 500
             with contextlib.suppress(OSError):

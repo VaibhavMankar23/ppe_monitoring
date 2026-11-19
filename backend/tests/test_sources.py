@@ -274,3 +274,46 @@ def test_recording_skips_corrupt_frames_instead_of_restarting(monkeypatch):
     src._cap = Cap()  # type: ignore[assignment]
     assert [src.grab(), src.grab(), src.grab()] == [True, True, True]  # the 2 corrupt frames are skipped
     assert src.grab() is False  # a long run of failures: the real end of the file
+
+
+# ---- rtsps:// goes through the system ffmpeg binary (stand-in ffprobe / ffmpeg scripts on PATH)
+def _fake_ffmpeg(tmp_path, monkeypatch, probe_ok=True):
+    ffprobe = tmp_path / "ffprobe"
+    ffprobe.write_text('#!/bin/sh\n' + ('echo \'{"streams":[{"width":4,"height":2,"avg_frame_rate":"10/1"}]}\'\n' if probe_ok
+                                         else 'echo "401 Unauthorized" >&2; exit 1\n'))
+    ffmpeg = tmp_path / "ffmpeg"
+    ffmpeg.write_text('#!/bin/sh\nprintf "%s " "$@" > "$0.args"\npython3 -c "import sys;sys.stdout.buffer.write(bytes([7])*24*2)"\n')
+    for f in (ffprobe, ffmpeg):
+        f.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+    return ffmpeg
+
+
+def test_rtsps_uses_ffmpeg_pipe(tmp_path, monkeypatch):
+    from app.sources import FFmpegPipeSource, make_source
+    ffmpeg = _fake_ffmpeg(tmp_path, monkeypatch)
+    src = make_source(SourceConfig(type="rtsp", uri="rtsps://admin:pw@10.0.0.9:554/video/live?channel=1&subtype=1", timeout=5))
+    assert isinstance(src, FFmpegPipeSource)
+    src.open()
+    assert src.fps == 10.0
+    img = src.read()
+    assert img.shape == (2, 4, 3) and img[0, 0, 0] == 7
+    assert src.grab() and src.retrieve().shape == (2, 4, 3)
+    assert src.read() is None  # ffmpeg exited -> caller reconnects
+    src.close()
+    args = (tmp_path / "ffmpeg.args").read_text()
+    assert "-tls_verify 0" in args and "-rtsp_transport tcp" in args and "channel=1&subtype=1" in args
+
+
+def test_rtsps_open_error_hides_password(tmp_path, monkeypatch):
+    from app.sources import make_source
+    _fake_ffmpeg(tmp_path, monkeypatch, probe_ok=False)
+    src = make_source(SourceConfig(type="rtsp", uri="rtsps://admin:pw@10.0.0.9:554/x", timeout=5))
+    with pytest.raises(SourceError) as e:
+        src.open()
+    assert "pw" not in str(e.value) and "401" in str(e.value)
+
+
+def test_plain_rtsp_still_uses_opencv():
+    from app.sources import RTSPStreamSource, make_source
+    assert type(make_source(SourceConfig(type="rtsp", uri="rtsp://10.0.0.9/x"))) is RTSPStreamSource

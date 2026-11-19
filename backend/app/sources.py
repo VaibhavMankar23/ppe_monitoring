@@ -9,7 +9,8 @@ Every camera type implements the same small `StreamSource` interface::
     fps                   native frame rate (0 = unknown)
 
 Implementations: `FileStreamSource` (local video, looped), `RTSPStreamSource` (rtsp:// through
-OpenCV's FFmpeg backend over TCP, with open/read timeouts), `HTTPStreamSource` (IP cameras over
+OpenCV's FFmpeg backend over TCP, with open/read timeouts; rtsps:// goes through `FFmpegPipeSource`, the
+system ffmpeg binary), `HTTPStreamSource` (IP cameras over
 HTTP: MJPEG multipart push, single-JPEG snapshot polling, or anything FFmpeg can play, e.g. HLS),
 `WebcamStreamSource`, `ImageFolderStreamSource`, and an `ONVIFStreamSource` placeholder. New types
 register themselves in `SOURCE_TYPES`; nothing downstream knows which kind a camera is.
@@ -22,8 +23,12 @@ stays down is reported as "offline" instead of freezing on its last frame.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import select
+import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -134,15 +139,16 @@ class _OpenCVSource(StreamSource):
         raise NotImplementedError
 
     def open(self) -> None:
+        t0 = time.monotonic()
         cap = self._capture()
         if not cap.isOpened():
             cap.release()
-            raise SourceError(self._open_error())
+            raise SourceError(self._open_error(time.monotonic() - t0))
         fps = self.cfg.fps or cap.get(cv2.CAP_PROP_FPS)
         self.fps = fps if 0.1 <= fps <= 120 else 0.0
         self._cap = cap
 
-    def _open_error(self) -> str:
+    def _open_error(self, elapsed: float | None = None) -> str:
         return f"cannot open {self.describe()}"
 
     def read(self) -> np.ndarray | None:
@@ -180,7 +186,7 @@ class FileStreamSource(_OpenCVSource):
     def _capture(self) -> cv2.VideoCapture:
         return cv2.VideoCapture(self.cfg.uri)
 
-    def _open_error(self) -> str:
+    def _open_error(self, elapsed: float | None = None) -> str:
         return f"cannot decode {self.describe()} (unsupported codec or damaged file)"
 
     MAX_BAD_FRAMES = 50  # unreadable frames in a row before a recording counts as ended
@@ -207,13 +213,127 @@ class _NetworkCapture(_OpenCVSource):
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         return cap
 
-    def _open_error(self) -> str:
-        return (f"cannot connect to {self.describe()} within {self.cfg.timeout:.0f}s "
-                "(check the address, port, path and credentials, and that the camera allows this client)")
+    def _open_error(self, elapsed: float | None = None) -> str:
+        hint = "check the address, port, path and credentials, and that the camera allows this client"
+        if elapsed is not None and elapsed < self.cfg.timeout * 0.8:
+            # failed fast: the camera refused, the name did not resolve, or it rejected the login - not a timeout
+            return f"cannot connect to {self.describe()}: refused or not found after {elapsed:.1f}s ({hint})"
+        return f"cannot connect to {self.describe()} within {self.cfg.timeout:.0f}s ({hint})"
 
 
 class RTSPStreamSource(_NetworkCapture):
     kind = "rtsp"
+
+
+class FFmpegPipeSource(_NetworkCapture):
+    """rtsps:// cameras (TLS, usually a self-signed certificate) decoded by the system `ffmpeg` binary.
+
+    OpenCV's bundled FFmpeg is not reliable for rtsps, while the `ffmpeg` installed in the image is the
+    one that plays these cameras in a terminal. ffprobe reads the picture size once, then ffmpeg writes
+    raw BGR frames to a pipe. Only the camera address changes; everything downstream is the same.
+    """
+
+    def __init__(self, cfg: SourceConfig, max_width: int = 0) -> None:
+        super().__init__(cfg, max_width)
+        self._proc: subprocess.Popen | None = None
+        self._err: Any = None
+        self._shape: tuple[int, int] = (0, 0)  # height, width
+        self._grabbed_img: np.ndarray | None = None
+
+    PIPE_MAX_FPS = 8.0  # frames/s sent through the pipe; the detector uses ~3 per camera
+
+    def _input_args(self) -> list[str]:
+        return ["-rtsp_transport", "tcp", "-tls_verify", "0", "-timeout", str(int(self.cfg.timeout * 1_000_000))]
+
+    def _err_tail(self) -> str:
+        try:
+            self._err.seek(0)
+            lines = self._err.read().decode("utf-8", "replace").strip().splitlines()
+            return lines[-1][:200].replace(self._url(), self.describe()) if lines else ""
+        except Exception:
+            return ""
+
+    def open(self) -> None:
+        url = self._url()
+        t0 = time.monotonic()
+        probe_cmd = ["ffprobe", "-v", "error", *self._input_args(), "-select_streams", "v:0",
+                     "-show_entries", "stream=width,height,avg_frame_rate", "-of", "json", url]
+        try:
+            out = subprocess.run(probe_cmd, capture_output=True, timeout=self.cfg.timeout + 5)
+        except FileNotFoundError as e:
+            raise SourceError("ffmpeg is not installed on this machine (needed for rtsps:// cameras)") from e
+        except subprocess.TimeoutExpired as e:
+            raise SourceError(self._open_error()) from e
+        try:
+            st = json.loads(out.stdout or b"{}")["streams"][0]
+            w, h = int(st["width"]), int(st["height"])
+        except (KeyError, IndexError, ValueError):
+            tail = out.stderr.decode("utf-8", "replace").strip().splitlines()
+            detail = (tail[-1][:200].replace(url, self.describe()) if tail else "")
+            raise SourceError(f"{self._open_error(time.monotonic() - t0)} {detail}".strip()) from None
+        try:
+            num, den = str(st.get("avg_frame_rate", "0/1")).split("/")
+            fps = float(num) / float(den) if float(den) else 0.0
+        except ValueError:
+            fps = 0.0
+        fps = self.cfg.fps or fps
+        self.fps = fps if 0.1 <= fps <= 120 else 0.0
+        self._shape = (h, w)
+        self._err = tempfile.TemporaryFile()
+        # Every frame that leaves ffmpeg is converted to BGR and copied through the pipe (6 MB at 1080p).
+        # The detector looks at a few per second, so the fps filter drops the rest before that cost is paid.
+        out_fps = self.cfg.fps or self.PIPE_MAX_FPS
+        vf = ["-vf", f"fps={out_fps:g}"] if not self.fps or self.fps > out_fps else []
+        cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
+               *self._input_args(), "-i", url, "-map", "0:v:0", "-an", *vf, "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
+        self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=self._err, bufsize=0)
+
+    def _read_frame(self) -> np.ndarray | None:
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return None
+        h, w = self._shape
+        need = h * w * 3
+        buf = bytearray()
+        fd = proc.stdout.fileno()
+        deadline = time.monotonic() + self.cfg.timeout
+        while len(buf) < need:
+            left = deadline - time.monotonic()
+            if left <= 0 or not select.select([fd], [], [], left)[0]:
+                return None  # no frame within the timeout -> reconnect
+            chunk = os.read(fd, need - len(buf))
+            if not chunk:  # ffmpeg exited
+                tail = self._err_tail()
+                if tail:
+                    log.warning("ffmpeg (%s): %s", self.describe(), tail)
+                return None
+            buf += chunk
+        return np.frombuffer(buf, np.uint8).reshape(h, w, 3)
+
+    def read(self) -> np.ndarray | None:
+        return self._read_frame()
+
+    def grab(self) -> bool:
+        self._grabbed_img = self._read_frame()
+        return self._grabbed_img is not None
+
+    def retrieve(self) -> np.ndarray | None:
+        img, self._grabbed_img = self._grabbed_img, None
+        return img
+
+    def close(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is not None:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+            if proc.stdout:
+                proc.stdout.close()
+        if self._err is not None:
+            self._err.close()
+            self._err = None
 
 
 class HTTPStreamSource(StreamSource):
@@ -411,6 +531,8 @@ SOURCE_TYPES: dict[str, type[StreamSource]] = {
 
 
 def make_source(cfg: SourceConfig, max_width: int = 0) -> StreamSource:
+    if cfg.type == "rtsp" and cfg.uri.lower().startswith("rtsps://"):
+        return FFmpegPipeSource(cfg, max_width)
     try:
         return SOURCE_TYPES[cfg.type](cfg, max_width)
     except KeyError as e:
