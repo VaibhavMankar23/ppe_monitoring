@@ -19,8 +19,9 @@ from helpers import FakeDetector, auth_settings, bootstrap_super_admin, raw_conf
 
 
 @pytest.fixture()
-def site(tmp_path):
+def site(tmp_path, monkeypatch):
     """A production config with two cameras; shipped defaults have none (like config.default.yaml)."""
+    monkeypatch.setenv("PPE_VIDEOS_DIR", str(tmp_path))  # new file cameras must be inside the videos folder
     path = write_config(tmp_path, raw_config(tmp_path, n_streams=2))
     defaults = raw_config(tmp_path, n_streams=0)
     defaults["alerts"]["cooldown_seconds"] = 30

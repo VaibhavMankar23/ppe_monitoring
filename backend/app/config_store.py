@@ -24,7 +24,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from .config import AppConfig, parse_config
+from .config import BACKEND_DIR, AppConfig, check_saved_values, parse_config
 from .secret_box import MASK, SecretError, encrypt, is_encrypted, same_endpoint, split_uri_credentials
 
 log = logging.getLogger(__name__)
@@ -150,6 +150,21 @@ def mask_sources(raw: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _model_of(annotation: Any) -> Any:
+    """The pydantic model inside a field type (X, X | None, list[X]), else None."""
+    import typing
+
+    from pydantic import BaseModel
+
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    for arg in typing.get_args(annotation):
+        m = _model_of(arg)
+        if m is not None:
+            return m
+    return None
+
+
 def _pydantic_errors(e: ValidationError) -> list[FieldError]:
     out = []
     for err in e.errors():
@@ -162,9 +177,19 @@ def _pydantic_errors(e: ValidationError) -> list[FieldError]:
 class ConfigStore:
     def __init__(self, path: str | os.PathLike[str], default_path: str | os.PathLike[str] | None = None, keep: int = 10) -> None:
         self.path = Path(path).resolve()
-        self.default_path = Path(default_path).resolve() if default_path else self.path.with_name("config.default.yaml")
+        self._default_override = Path(default_path).resolve() if default_path else None
         self.keep = keep
         self._lock = threading.Lock()
+        self.previous_text: str | None = None  # file content before the last save (for rollback)
+
+    @property
+    def default_path(self) -> Path:
+        """The defaults normally sit next to config.yaml (Docker, backend/); when config.yaml lives elsewhere
+        (PPE_CONFIG) or the copy is gone, use the one shipped with the app instead of failing."""
+        if self._default_override is not None:
+            return self._default_override
+        beside = self.path.with_name("config.default.yaml")
+        return beside if beside.is_file() else (BACKEND_DIR / "config.default.yaml").resolve()
 
     # ------------------------------------------------------------ read
     def read_text(self) -> str:
@@ -196,9 +221,79 @@ class ConfigStore:
 
     def validate(self, raw: dict[str, Any]) -> AppConfig:
         try:
-            return parse_config(raw, self.path.parent)
+            cfg = parse_config(raw, self.path.parent)
         except ValidationError as e:
             raise ConfigInvalid(_pydantic_errors(e)) from e
+        bad = check_saved_values(raw)
+        if bad:
+            raise ConfigInvalid([FieldError(loc, msg) for loc, msg in bad])
+        return cfg
+
+    def write_text(self, text: str) -> None:
+        """Put back an earlier file content (rollback when a saved config could not be applied)."""
+        with self._lock:
+            self._atomic_write(text)
+
+    def save_rules(self, raw: dict[str, Any]) -> list[FieldError]:
+        """Checks that apply when someone saves, not when an existing file is loaded (an older file with a
+        quirk must still start the server; it just has to be fixed before it can be changed again)."""
+        errors: list[FieldError] = []
+        current = self.read_raw()
+
+        # misspelt / unknown keys are silently ignored by the loader: refuse new ones
+        def unknown(node: Any, model: Any, cur: Any, path: str) -> None:
+            if not isinstance(node, dict) or model is None:
+                return
+            fields = model.model_fields
+            for key, val in node.items():
+                if key not in fields:
+                    if not (isinstance(cur, dict) and key in cur):  # already in the file: not new
+                        errors.append(FieldError(f"{path}{key}", "Unknown setting (check the spelling)."))
+                    continue
+                sub = _model_of(fields[key].annotation)
+                if isinstance(val, list) and sub is not None:
+                    cur_list = cur.get(key) if isinstance(cur, dict) else None
+                    for i, item in enumerate(val):
+                        c = cur_list[i] if isinstance(cur_list, list) and i < len(cur_list) else None
+                        unknown(item, sub, c, f"{path}{key}.{i}.")
+                else:
+                    unknown(val, sub, cur.get(key) if isinstance(cur, dict) else None, f"{path}{key}.")
+
+        unknown(raw, AppConfig, current, "")
+
+        alarm = raw.get("alarm") if isinstance(raw.get("alarm"), dict) else {}
+        hook = alarm.get("webhook") if isinstance(alarm.get("webhook"), dict) else {}
+        if hook.get("enabled"):
+            url = str(hook.get("url") or "").strip()
+            if not url.lower().startswith(("http://", "https://")):
+                errors.append(FieldError("alarm.webhook.url", "The webhook address must start with http:// or https://."))
+        mail = alarm.get("email") if isinstance(alarm.get("email"), dict) else {}
+        if mail.get("enabled"):
+            if not str(mail.get("smtp_host") or "").strip():
+                errors.append(FieldError("alarm.email.smtp_host", "Email alarms need the SMTP server address."))
+            rec = mail.get("recipients")
+            if not (rec if isinstance(rec, list) else str(rec or "").strip()):
+                errors.append(FieldError("alarm.email.recipients", "Email alarms need at least one recipient."))
+
+        cur_names: dict[str, int] = {}
+        for s in current.get("streams") or []:
+            if isinstance(s, dict):
+                k = str(s.get("name", "")).strip().lower()
+                cur_names[k] = cur_names.get(k, 0) + 1
+        seen: dict[str, int] = {}
+        for i, s in enumerate(raw.get("streams") or []):
+            if not isinstance(s, dict):
+                continue
+            zones = s.get("zones") or []
+            watches = s.get("detect_phone") or any(isinstance(z, dict) and z.get("type") == "restricted" for z in zones)
+            if "required_ppe" in s and not (s.get("required_ppe") or watches):
+                errors.append(FieldError(f"streams.{i}.required_ppe",
+                                         "Select at least one PPE item: with none, this camera would never raise a violation."))
+            key = str(s.get("name", "")).strip().lower()
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] > 1 and cur_names.get(key, 0) < 2:
+                errors.append(FieldError(f"streams.{i}.name", f"Another camera is already called \"{str(s.get('name')).strip()}\"."))
+        return errors
 
     def validate_any(self, *, config: dict[str, Any] | None = None, yaml_text: str | None = None) -> tuple[dict[str, Any], str, AppConfig]:
         """Validate a form object or raw YAML; returns (raw dict, text to write, parsed config)."""
@@ -209,7 +304,11 @@ class ConfigStore:
                 yaml_text = HEADER + yaml.safe_dump(raw, sort_keys=False, allow_unicode=True, default_flow_style=False, width=120)
             text = yaml_text if yaml_text.endswith("\n") else yaml_text + "\n"
             try:
-                return raw, text, self.validate(raw)
+                cfg = self.validate(raw)
+                extra = self.save_rules(raw)
+                if extra:
+                    raise ConfigInvalid(extra)
+                return raw, text, cfg
             except ConfigInvalid as e:  # point the raw editor at the offending lines
                 for err in e.errors:
                     err.line = err.line or _line_of(yaml_text, err.loc)
@@ -219,7 +318,11 @@ class ConfigStore:
             text = HEADER + yaml.safe_dump(raw, sort_keys=False, allow_unicode=True, default_flow_style=False, width=120)
         else:
             raise ConfigInvalid([FieldError("config", "send either 'config' or 'yaml'")])
-        return raw, text, self.validate(raw)
+        cfg = self.validate(raw)
+        extra = self.save_rules(raw)
+        if extra:
+            raise ConfigInvalid(extra)
+        return raw, text, cfg
 
     # ------------------------------------------------------------ write
     def save(self, *, config: dict[str, Any] | None = None, yaml_text: str | None = None, etag: str | None = None) -> AppConfig:
@@ -228,6 +331,7 @@ class ConfigStore:
             if etag and self.path.exists() and etag_of(self.read_text()) != etag:
                 raise ConfigConflict("config.yaml was changed by someone else - reload and try again")
             self._backup()
+            self.previous_text = self.read_text() if self.path.exists() else None
             self._atomic_write(text)
         log.info("config saved to %s", self.path)
         return parsed
@@ -236,7 +340,10 @@ class ConfigStore:
         """What "Reset to defaults" would write. Cameras are site configuration, not a "setting": by
         default they are kept (the shipped defaults have none) and only everything else is reset.
         Returns the config mapping, or the defaults' YAML text (comments kept) when cameras go too."""
-        text = self.default_path.read_text(encoding="utf-8")
+        try:
+            text = self.default_path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise ConfigInvalid([FieldError("config", f"The shipped default settings could not be read ({self.default_path}): {e.strerror or e}")]) from e
         if not keep_cameras:
             return text
         raw = self.parse_yaml(text)

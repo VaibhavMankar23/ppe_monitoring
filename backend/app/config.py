@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import ValidationError, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .ppe_logic import PPE_ITEMS
 
@@ -192,6 +192,14 @@ class StreamConfig(_Model):
     # Where on the image the rules apply (empty = the whole frame is monitored).
     zones: list[ZoneConfig] = Field(default_factory=list, max_length=16)
 
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("the camera needs a name")
+        return v
+
     @field_validator("zones")
     @classmethod
     def _unique_zone_names(cls, v: list[ZoneConfig]) -> list[ZoneConfig]:
@@ -312,6 +320,31 @@ def _resolve(path: str, base: Path) -> str:
 def default_config_path() -> Path:
     load_dotenv(BACKEND_DIR / ".env")
     return Path(os.environ.get("PPE_CONFIG") or BACKEND_DIR / "config.yaml").resolve()
+
+
+def check_saved_values(raw: dict[str, Any]) -> list[tuple[str, str]]:
+    """Errors in the values written in the file itself for keys an environment variable overrides.
+
+    parse_config lets PPE_PORT / PPE_DEVICE / ... win over the file, so a bad value in the file (port
+    70000) passes while the variable is set and stops the server on the next start without it.
+    Returns (dotted path, message) pairs."""
+    import copy
+
+    base = _apply_env_overrides(expand_env(copy.deepcopy({k: v for k, v in (raw or {}).items() if k != "streams"})))
+    out: list[tuple[str, str]] = []
+    for section, key in ENV_OVERRIDES.values():
+        sec = (raw or {}).get(section)
+        if not isinstance(sec, dict) or key not in sec:
+            continue
+        probe = copy.deepcopy(base)
+        probe.setdefault(section, {})[key] = expand_env(sec[key])
+        try:
+            AppConfig.model_validate({**probe, "streams": []})
+        except ValidationError as e:
+            for err in e.errors():
+                if tuple(err["loc"][:2]) == (section, key):
+                    out.append((f"{section}.{key}", err["msg"]))
+    return out
 
 
 def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:

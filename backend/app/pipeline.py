@@ -1049,6 +1049,12 @@ class Monitor:
                               or old.compliance.min_person_height != new.compliance.min_person_height
                               or phone_flip)  # first/last camera to want phone: (un)load the 2nd model
 
+            # Build (and warm up) the new engine BEFORE touching any worker or self.cfg: a model that
+            # cannot be loaded then raises with the running system exactly as it was.
+            prebuilt: list[InferenceEngine] | None = None
+            if engine_changed and new.inference.mode != "per_stream":
+                prebuilt = self._build_engines(new, [])
+
             old_streams = {s.id: s for s in old.streams}
             new_workers: dict[str, StreamWorker] = {}
             to_start: list[StreamWorker] = []
@@ -1083,7 +1089,10 @@ class Monitor:
             workers = list(new_workers.values())
             structural = bool(result["added"] or result["removed"] or result["restarted"] or result["started"])
             if engine_changed or (new.inference.mode == "per_stream" and structural):
-                engines = self._build_engines(new, workers)  # build + warm up first: minimal gap
+                engines = prebuilt if prebuilt is not None else self._build_engines(new, workers)
+                for e in engines:
+                    if prebuilt is not None:
+                        e.workers = workers
                 for e in self.engines:
                     e.stop()
                 self._adopt_engines(engines)

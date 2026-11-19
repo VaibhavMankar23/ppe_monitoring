@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from contextlib import asynccontextmanager
@@ -27,9 +28,9 @@ from pydantic import BaseModel, Field
 from . import analytics, auth_routes, sources_routes
 from .alarms import AlarmDispatcher
 from .auth import ApiError, AuthContext, api_error_handler, check_permission, client_ip, require, user_from_token
-from .config import AppConfig, default_config_path, load_config
+from .config import STREAM_ENV_VARS, AppConfig, default_config_path, expand_env, load_config
 from .config_diff import ADMIN_STREAM_KEYS, admin_denied_changes, camera_changes, diff, split_diff
-from .config_store import ConfigConflict, ConfigInvalid, ConfigStore
+from .config_store import ConfigConflict, ConfigInvalid, ConfigStore, FieldError
 from .pipeline import Monitor, StreamWorker
 from .ppe_logic import BEHAVIOR_ITEMS, PPE_ITEMS, VIOLATION_ITEMS, ZONE_ITEMS
 from .security import AuthSettings, decode_access_token
@@ -298,7 +299,11 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
             alarms.close()
             store.close()
 
-    app = FastAPI(title="PPE Compliance Monitor", lifespan=lifespan)
+    # the interactive API docs list every route to anyone who can reach the port, and load assets from a CDN:
+    # off unless PPE_API_DOCS=1 (development)
+    docs_on = os.environ.get("PPE_API_DOCS", "").lower() in ("1", "true", "yes")
+    app = FastAPI(title="PPE Compliance Monitor", lifespan=lifespan, docs_url="/docs" if docs_on else None,
+                  redoc_url=None, openapi_url="/openapi.json" if docs_on else None)
     app.add_middleware(CORSMiddleware, allow_origins=cfg.server.cors_origins, allow_methods=["*"], allow_headers=["*"])
     security_headers = _security_headers(Path(cfg.server.static_dir) / "index.html")
 
@@ -433,13 +438,36 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
         }
 
     @app.post("/api/config/validate", dependencies=cfg_view)
-    def validate_config(body: ConfigPayload) -> dict[str, Any]:
+    def validate_config(body: ConfigPayload, request: Request) -> dict[str, Any]:
         try:
             raw, _, _ = cfg_store.validate_any(config=body.config, yaml_text=body.yaml)
+            _check_video_paths(request, raw, _current_raw())
         except ConfigInvalid as e:
             return {"valid": False, "errors": [x.to_dict() for x in e.errors]}
         # what saving this would do to the cameras: the UI confirms removals / source changes first
         return {"valid": True, "errors": [], "cameras": camera_changes(_current_raw(), raw)}
+
+    def _check_video_paths(request: Request, planned_raw: dict[str, Any], before_raw: dict[str, Any]) -> None:
+        """New or changed file / image-folder cameras must live in the videos folder, as for Test connection."""
+        from .sources_routes import videos_dir
+        root = videos_dir(request)
+        base = cfg_store.path.parent
+        old = {s.get("id"): (s.get("source") or {}).get("uri") for s in before_raw.get("streams") or [] if isinstance(s, dict)}
+        errors = []
+        for i, s in enumerate(planned_raw.get("streams") or []):
+            src = s.get("source") if isinstance(s, dict) else None
+            if not isinstance(src, dict) or src.get("type", "file") not in ("file", "images"):
+                continue
+            uri = src.get("uri")
+            if not isinstance(uri, str) or old.get(s.get("id")) == uri:
+                continue
+            path = Path(expand_env(uri, STREAM_ENV_VARS))
+            path = (path if path.is_absolute() else base / path).resolve()
+            if not path.is_relative_to(root):
+                errors.append(FieldError(f"streams.{i}.source.uri",
+                                         f"Recordings and image folders must be inside the videos folder ({root.name}/)."))
+        if errors:
+            raise ConfigInvalid(errors)
 
     def _current_raw() -> dict[str, Any]:
         return cfg_store.read_raw()
@@ -465,7 +493,15 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
 
     async def _apply(new_cfg: AppConfig, request: Request, user: User, action: str, before_raw: dict[str, Any],
                      detail: str = "") -> dict[str, Any]:
-        reload = await asyncio.to_thread(monitor.apply_config, new_cfg)
+        previous = cfg_store.previous_text
+        try:
+            reload = await asyncio.to_thread(monitor.apply_config, new_cfg)
+        except Exception as e:  # e.g. model file missing / not a model: put the old file back, keep running as before
+            log.exception("config could not be applied; restoring the previous config.yaml")
+            if previous is not None:
+                await asyncio.to_thread(cfg_store.write_text, previous)
+            raise ApiError(422, f"The new settings could not be applied and were not saved: {e}. "
+                                "The system keeps running with the previous settings.", "apply_failed") from e
         await asyncio.to_thread(_retention, new_cfg)
         doc = cfg_store.read()
         before, after = split_diff(diff(before_raw, cfg_store.read_raw()))  # unmasked: real changes only
@@ -490,6 +526,7 @@ def create_app(cfg: AppConfig | None = None, monitor: Monitor | None = None, con
                                     f"required PPE, confidence). Not allowed: {shown}.", "forbidden")
         try:
             planned, _, _ = cfg_store.validate_any(config=body.config, yaml_text=body.yaml)
+            _check_video_paths(request, planned, before_raw)
         except ConfigInvalid as e:
             return _invalid(e)
         blocked = _removal_guard(before_raw, planned, body.confirm_remove)

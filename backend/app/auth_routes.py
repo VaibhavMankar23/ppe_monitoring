@@ -91,7 +91,7 @@ class ChangePasswordBody(BaseModel):
 
 
 class CreateUserBody(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
+    username: str = Field(min_length=3, max_length=32)
     password: str = Field(min_length=1, max_length=256)
     role: Literal["admin", "super_admin"] = "admin"
     must_change_password: bool = True
@@ -221,6 +221,9 @@ def build_router() -> APIRouter:
         c = ctx(request)
         token = (body.refresh_token if body and body.refresh_token else None) or request.cookies.get(REFRESH_COOKIE)
         uid = c.users.revoke_refresh(token) if token else None
+        bearer = request.headers.get("authorization", "").partition(" ")
+        if bearer[0].lower() == "bearer" and bearer[2].strip():
+            c.revoke(bearer[2].strip())  # the access token stops working now, not when it expires
         _clear_refresh_cookie(c, request, response)
         if uid is not None:
             u = c.users.get(uid)

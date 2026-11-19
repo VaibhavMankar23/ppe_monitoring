@@ -12,8 +12,10 @@ lacks the permission.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -39,6 +41,23 @@ class AuthContext:
     settings: AuthSettings
     users: UserStore
     audit: AuditStore
+    # access tokens ended by "sign out" (jti -> expiry): they would otherwise stay valid until they expire
+    revoked: dict[str, float] = field(default_factory=dict)
+    _revoked_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def revoke(self, token: str) -> None:
+        try:
+            claims = decode_access_token(self.settings, token)
+        except TokenError:
+            return  # already invalid or expired
+        now = time.time()
+        with self._revoked_lock:
+            self.revoked = {j: e for j, e in self.revoked.items() if e > now}  # forget the expired
+            if claims.get("jti"):
+                self.revoked[claims["jti"]] = float(claims["exp"])
+
+    def is_revoked(self, claims: dict[str, Any]) -> bool:
+        return claims.get("jti") in self.revoked
 
 
 def ctx(request: Request) -> AuthContext:
@@ -58,6 +77,8 @@ def user_from_token(c: AuthContext, token: str) -> User:
         claims = decode_access_token(c.settings, token)
     except TokenError as e:
         raise _unauthorized(str(e), e.code) from e
+    if c.is_revoked(claims):
+        raise _unauthorized("You signed out. Please sign in again.", "session_revoked")
     try:
         user = c.users.get(int(claims["sub"]))
     except (TypeError, ValueError):
