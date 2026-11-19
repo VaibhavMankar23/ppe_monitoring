@@ -6,6 +6,13 @@ All notable changes to the PPE Compliance Monitor. Dates are IST.
 
 Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and acceptance testing.
 
+### GPU servers (Nov 2026)
+- **Fixed (high):** on a GPU server with too little free memory the app crashed at start and Docker restarted
+  it in a loop (`OutOfMemory` while loading the TensorRT engines). It now logs a clear error and runs the same
+  models with PyTorch, which needs much less GPU memory. Free the GPU and restart to get TensorRT back.
+- **Added:** with several NVIDIA GPUs, `PPE_DEVICE=auto` (or `cuda`) now uses the one with the most free memory,
+  chosen once so every model shares a card. `cuda:0` / `cuda:1` still pin a specific one.
+
 ### UI standard v4 (Nov 2026)
 - **Changed:** every page now follows one standard layout: a left menu grouped by job (Operate: Command, Live,
   Review; Analyse: Insights; Configure: Cameras & zones, Detection, System health, People, Audit trail) and a
@@ -23,6 +30,9 @@ Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and a
   a pill, a small graphic and one line of context, a camera fleet with Unsafe / Not delivering filters and a
   legend, a compliance trend that marks days below target in red, what is being missed, a latest-events table
   with a Review button on each row, and the hour-by-weekday heatmap. Every figure is live data.
+- **Changed:** Add camera: the source type is now a set of option cards with a one-line description each (IP camera
+  RTSP first), Test connection says why it is unavailable and stacks on phones, the video list no longer shows the
+  server's full folder path, and upload limits read in GB.
 - **Added:** "Page not found" for unknown addresses; the Cameras page no longer scrolls sideways on phones.
 - **Unchanged:** every feature, permission, shortcut and API call. The Setup tab strip is replaced by the menu.
 

@@ -71,6 +71,11 @@ starts take seconds. When it is ready the log shows `model best_480_b32_fp16.eng
 the build failed it shows `model best.pt on cuda:0` (PyTorch, slower but working). On a machine
 without an NVIDIA GPU: `intel:cpu`.
 
+**Several GPUs, or a shared GPU:** with `PPE_DEVICE=auto` the app uses the NVIDIA GPU with the most free memory
+(the log says `2 GPUs found, using cuda:1`). To pin one, set `PPE_DEVICE=cuda:1` in `.env`. If the GPU is too
+full to load the TensorRT engines (`OutOfMemory`), the app starts anyway with PyTorch and says so in the log;
+free the GPU and restart to get TensorRT back. Check what else uses the GPU with `nvidia-smi`.
+
 An engine only works on the GPU model and TensorRT version that built it. After replacing the GPU
 or upgrading the image, delete `models/safesight/*.engine` so it is rebuilt (otherwise the app logs
 the load error and falls back to PyTorch).
