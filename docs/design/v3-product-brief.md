@@ -1,5 +1,9 @@
 # PPE Compliance v3: product brief
 
+> **Update (Nov 2026):** the visual language and navigation in sections 4 and 5 were replaced by the v4 UI standard
+> (left menu grouped Operate / Analyse / Configure, light-first theme, Mahindra red for identity only). The users,
+> jobs to be done and decisions for 45-camera scale below still apply. See `CHANGELOG.md`.
+
 Business analysis behind the v3 redesign. Every screen decision traces back to a user need below.
 Written 16 Oct 2026.
 

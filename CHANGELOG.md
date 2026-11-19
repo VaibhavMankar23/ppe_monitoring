@@ -6,6 +6,26 @@ All notable changes to the PPE Compliance Monitor. Dates are IST.
 
 Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and acceptance testing.
 
+### UI standard v4 (Nov 2026)
+- **Changed:** every page now follows one standard layout: a left menu grouped by job (Operate: Command, Live,
+  Review; Analyse: Insights; Configure: Cameras & zones, Detection, System health, People, Audit trail) and a
+  slim top bar with search (Ctrl K), live status, notifications, sound, theme and account. Below 1024 px the
+  menu is a drawer.
+- **Changed:** light theme by default, following the operating system until someone picks a theme (the choice
+  is remembered). Full dark theme kept. Text meets WCAG AA contrast in both.
+- **Changed:** Mahindra red is used for identity only (logo, active menu item). Interaction and data use one
+  blue, primary buttons are ink, and alarms use a separate crimson. Status is always shown with a word or icon,
+  never by colour alone.
+- **Changed:** IBM Plex Sans / Plex Mono, tighter corners (8 px controls, 10 px cards), no glow or gradients,
+  a status edge on the Command summary, and a brand sign-in page that follows the theme.
+- **Changed:** the Command page follows the approved prototype: a status summary with an "Act now" list
+  (live picture with boxes, who is flagged and what is missing, "Open camera"), four key-figure cards with
+  a pill, a small graphic and one line of context, a camera fleet with Unsafe / Not delivering filters and a
+  legend, a compliance trend that marks days below target in red, what is being missed, a latest-events table
+  with a Review button on each row, and the hour-by-weekday heatmap. Every figure is live data.
+- **Added:** "Page not found" for unknown addresses; the Cameras page no longer scrolls sideways on phones.
+- **Unchanged:** every feature, permission, shortcut and API call. The Setup tab strip is replaced by the menu.
+
 ### End-to-end QA round (Nov 2026)
 - **Fixed (high):** a model path that could not be loaded was written to `config.yaml` and then failed
   with a bare 500, so the next restart would not boot. The new model is now loaded before anything
