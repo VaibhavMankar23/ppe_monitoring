@@ -116,3 +116,46 @@ def test_sizes_beyond_the_engine_use_pytorch(fake_yolo, monkeypatch):
     det.predict(frame, 0.5, imgsz=640)  # evidence pass: within 2 x 480
     det.predict(frame, 0.5, imgsz=1280)  # beyond the engine's range
     assert FakeYOLO.loaded[-2].endswith(".engine") and FakeYOLO.loaded[-1] == str(fake_yolo)
+
+
+# ------------------------------------------------------------------ several GPUs
+@pytest.fixture()
+def two_gpus(monkeypatch):
+    import torch
+
+    D._auto_cuda = None
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    free = {0: 2 * 2**30, 1: 11 * 2**30}  # GPU 0 is busy with other programs
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (free[i], 12 * 2**30))
+    yield free
+    D._auto_cuda = None
+
+
+def test_auto_picks_the_gpu_with_most_free_memory(two_gpus):
+    assert D.pick_cuda_device("auto") == "cuda:1"
+    assert D.pick_cuda_device("cuda") == "cuda:1"
+
+
+def test_choice_is_made_once_so_every_model_shares_a_card(two_gpus):
+    assert D.pick_cuda_device("auto") == "cuda:1"
+    two_gpus[1], two_gpus[0] = 1 * 2**30, 10 * 2**30  # memory shifts after the first model loads
+    assert D.pick_cuda_device("auto") == "cuda:1"
+
+
+def test_explicit_device_is_always_honoured(two_gpus):
+    assert D.pick_cuda_device("cuda:0") == "cuda:0"
+
+
+def test_select_backend_uses_the_picked_gpu(fake_yolo, two_gpus):
+    weights, device, _ = D.select_backend(ModelConfig(weights=str(fake_yolo), imgsz=480))
+    assert device == "cuda:1" and weights.endswith(".engine")
+
+
+def test_single_gpu_stays_on_cuda_0(monkeypatch):
+    import torch
+
+    D._auto_cuda = None
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    assert D.pick_cuda_device("auto") == "cuda:0"
+    D._auto_cuda = None

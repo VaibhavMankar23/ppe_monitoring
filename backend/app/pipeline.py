@@ -20,6 +20,7 @@ import hashlib
 import json
 import math
 import logging
+import re
 import os
 import threading
 import time
@@ -971,7 +972,37 @@ class Monitor:
             m = m.model_copy(update={"phone_weights": ""})
         return m
 
+    _GPU_LOAD_FAILURE = re.compile(r"out ?of ?memory|set_input_shape|tensorrt|\[TRT\]|cuda", re.I)
+
     def _build_engines(self, cfg: AppConfig, workers: list[StreamWorker]) -> list[InferenceEngine]:
+        """Build the inference engine(s). If the TensorRT engines cannot be loaded on the GPU (typically the
+        card has too little free memory: each loaded copy reserves memory for its largest batch), run the
+        same models with PyTorch instead of refusing to start. The saved settings are not changed."""
+        failure = ""
+        try:
+            return self._build_engines_once(cfg, workers)
+        except Exception as e:
+            if not (cfg.model.tensorrt and self._GPU_LOAD_FAILURE.search(f"{type(e).__name__} {e}")):
+                raise
+            failure = f"{type(e).__name__}: {str(e)[:120]}"
+        # outside the except block: the failed attempt's engines are released before the retry needs the memory
+        log.error("TensorRT engines could not be loaded on the GPU (%s). Running the models with PyTorch instead: "
+                  "slower, and it needs much less GPU memory. Free GPU memory (nvidia-smi) and restart to use TensorRT, "
+                  "or set model.tensorrt: false to silence this.", failure)
+        import gc
+
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # no torch / no GPU: nothing to release
+            pass
+        cfg.model = cfg.model.model_copy(update={"tensorrt": False})
+        return self._build_engines_once(cfg, workers)
+
+    def _build_engines_once(self, cfg: AppConfig, workers: list[StreamWorker]) -> list[InferenceEngine]:
         low, ic, mph, ev = cfg.tracking.low_thresh, cfg.inference, cfg.compliance.min_person_height, cfg.alerts.evidence_imgsz
         mcfg = self._detector_cfg(cfg)
         if ic.mode == "per_stream":

@@ -136,6 +136,34 @@ def tensorrt_engine_path(weights: str, imgsz: int, half: bool, device: str, expo
         return None
 
 
+_auto_cuda: str | None = None
+
+
+def pick_cuda_device(requested: str) -> str:
+    """The CUDA device to use. "cuda:N" is taken as written. For "auto" / "cuda" on a machine with several
+    GPUs, the one with the most free memory (another program may already hold most of GPU 0). The choice is
+    made once per process, so the PPE model, the person model and later reloads all land on the same card."""
+    global _auto_cuda
+    if ":" in requested:
+        return requested
+    if _auto_cuda is None:
+        import torch
+
+        best = 0
+        try:
+            n = torch.cuda.device_count()
+            if n > 1:
+                free = [torch.cuda.mem_get_info(i)[0] for i in range(n)]
+                best = max(range(n), key=lambda i: free[i])
+                log.info("%d GPUs found, using cuda:%d (most free memory: %s)", n, best,
+                         ", ".join(f"cuda:{i} {f / 2**20:.0f} MiB" for i, f in enumerate(free)))
+        except Exception:  # cannot read memory: keep the first card
+            log.exception("could not compare the GPUs' free memory - using cuda:0")
+            best = 0
+        _auto_cuda = f"cuda:{best}"
+    return _auto_cuda
+
+
 def select_backend(cfg: ModelConfig) -> tuple[str, str, int]:
     """Pick (weights, device, imgsz). Order for `auto`: CUDA (TensorRT, else PyTorch) > OpenVINO iGPU >
     OpenVINO CPU > PyTorch CPU."""
@@ -147,7 +175,7 @@ def select_backend(cfg: ModelConfig) -> tuple[str, str, int]:
         log.warning("CUDA requested but not available - falling back to auto")
         req = "auto"
     if req.startswith("cuda") or (req == "auto" and cuda):
-        device = req if req.startswith("cuda") else "cuda:0"
+        device = pick_cuda_device(req)
         if cfg.tensorrt:
             path = tensorrt_engine_path(cfg.weights, cfg.imgsz, cfg.half, device)
             if path:
