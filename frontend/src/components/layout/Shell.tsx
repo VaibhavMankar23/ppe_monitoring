@@ -10,7 +10,7 @@ import type { Violation } from "../../types";
 import { passwordAcceptable, PasswordField, PolicyChecklist } from "../admin/PasswordPolicy";
 import { Button, cx, Dialog, Field, Icon, lockScroll, Notice, useToast, type IconName } from "../ui";
 
-type Page = Exclude<Route, "login">;
+type Page = Exclude<Route, "login" | "notfound">;
 
 /** v3 information architecture: five workspaces, ordered by how often each is used. */
 const WORKSPACES: { key: string; label: string; icon: IconName; routes: { route: Page; label: string; icon: IconName }[] }[] = [

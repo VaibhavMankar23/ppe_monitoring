@@ -86,7 +86,11 @@ export function expire(reason: string): void {
 
 export async function logoutRequest(): Promise<void> {
   try {
-    await fetch(`${API_BASE}/api/auth/logout`, { method: "POST", credentials: "same-origin" });
+    await fetch(`${API_BASE}/api/auth/logout`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    });
   } catch {
     /* offline: the cookie is still cleared server-side on its next use / expiry */
   }

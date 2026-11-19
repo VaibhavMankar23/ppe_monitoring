@@ -6,6 +6,33 @@ All notable changes to the PPE Compliance Monitor. Dates are IST.
 
 Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and acceptance testing.
 
+### End-to-end QA round (Nov 2026)
+- **Fixed (high):** a model path that could not be loaded was written to `config.yaml` and then failed
+  with a bare 500, so the next restart would not boot. The new model is now loaded before anything
+  changes; on failure the save is refused (422) and the old file and settings stay.
+- **Fixed (high):** values the loader rejects (`server.port: 70000`) were accepted while an environment
+  variable (`PPE_PORT`...) overrode that key. The value written in the file is checked too.
+- **Fixed (high):** a camera could be saved with a file path anywhere on the server. File and
+  image-folder cameras must be inside the videos folder, as for Test connection (existing cameras are
+  not affected).
+- **Fixed:** "Reset to defaults" returned a 500 when `config.yaml` lives outside `backend/`
+  (`PPE_CONFIG`); it falls back to the defaults shipped with the app.
+- **Fixed:** uploads accepted empty and non-video files; they are now refused and nothing is kept.
+- **Fixed:** saving now refuses misspelt (unknown) settings, an enabled webhook or email alarm that
+  cannot work, a camera with no PPE and no other check, blank camera names and two cameras with the
+  same name. Settings already in an existing file are left alone so it still loads.
+- **Fixed:** an access token kept working for up to 15 minutes after signing out.
+- **Fixed:** `/docs` and `/openapi.json` were open without signing in. They are now off; set
+  `PPE_API_DOCS=1` for development.
+- **Fixed:** a camera that refuses the connection at once was reported as "cannot connect within 10s".
+- **Fixed:** the Cameras page scrolled sideways on phones and tablets; an unknown address now shows
+  "Page not found" instead of another page; usernames must be 3-32 characters (as the message says).
+- **Changed (rtsps cameras):** ffmpeg now sends at most 8 frames/s through the pipe instead of every
+  frame, cutting the per-camera conversion and copy cost by about two thirds on a 25 fps camera.
+- **Known limitation:** for `rtsps://` cameras the camera URL, including its password, is an argument of
+  the `ffmpeg` / `ffprobe` processes, so other users on the same machine could read it with `ps`.
+  Inside the Docker container only the app can. Do not give other people shell access to the server.
+
 ### Live camera testing fixes
 - **Fixed (high, issue #29):** different workers were merged into one long violation event, so
   violations were missed. An event now matches new workers only against boxes of its workers seen

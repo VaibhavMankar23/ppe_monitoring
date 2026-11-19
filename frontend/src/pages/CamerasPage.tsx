@@ -142,7 +142,7 @@ export function CamerasPage() {
                 { value: "off", label: "Turned off", count: cameras.filter((c) => c.enabled === false).length },
               ]} />
             </div>
-            <div className="overflow-x-auto">
+            <div className="relative overflow-x-auto">
               <table className="table min-w-[860px]">
                 <thead>
                   <tr>

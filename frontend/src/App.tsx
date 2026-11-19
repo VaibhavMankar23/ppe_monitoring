@@ -18,7 +18,7 @@ import { MonitorProvider } from "./state/monitor";
 // the chart library is large: Analytics (and it) load only when opened
 const AnalyticsPage = lazy(() => import("./pages/AnalyticsPage").then((m) => ({ default: m.AnalyticsPage })));
 
-type PageRoute = Exclude<Route, "login">;
+type PageRoute = Exclude<Route, "login" | "notfound">;
 const PAGES: Record<PageRoute, () => ReactNode> = {
   overview: () => <OverviewPage />,
   monitoring: () => <LivePage />,
@@ -69,6 +69,22 @@ export default function App() {
   if (!user) return <LoginPage />;
   if (user.must_change_password) return <ForcedPasswordChange />;
 
+  if (route === "notfound") {
+    return (
+      <MonitorProvider key={user.id}>
+        <Shell route="overview">
+          <Page title="Page not found">
+            <Panel>
+              <Empty icon="search" title="There is no page at this address"
+                action={<Button variant="primary" onClick={() => navigate("overview")}>Go to Command</Button>}>
+                The link may be old or mistyped. Use the menu at the top to find what you need.
+              </Empty>
+            </Panel>
+          </Page>
+        </Shell>
+      </MonitorProvider>
+    );
+  }
   const page: PageRoute = route === "login" ? "overview" : route;
   return (
     <MonitorProvider key={user.id}>

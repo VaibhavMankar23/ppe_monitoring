@@ -78,6 +78,12 @@ Not changed in code (decisions or deployment work): retention period for photos 
 decision), "keep me signed in" length (30 days), upload size limit (8 GB, Super Admin only),
 exact version pinning with hashes (recommended for release builds).
 
+### Known limitations
+- **rtsps cameras and `ps`.** The system `ffmpeg` / `ffprobe` that decode `rtsps://` cameras receive the camera URL,
+  password included, on their command line, which other local accounts can read. Run the app in its container
+  (as the compose files do) and keep shell access to the server limited. RTSP/HTTP cameras decoded by OpenCV are not affected.
+- **Interactive API docs** (`/docs`) are off unless `PPE_API_DOCS=1` is set.
+
 ## 4. Go-live checklist
 
 - [ ] Served over HTTPS only: `docker compose -f docker-compose.yml -f deploy/docker-compose.https.yml up -d`

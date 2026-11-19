@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Permission } from "../types";
 
-export type Route = "overview" | "monitoring" | "incidents" | "reports" | "devices" | "settings" | "system" | "users" | "audit" | "login";
+export type Route = "notfound" | "overview" | "monitoring" | "incidents" | "reports" | "devices" | "settings" | "system" | "users" | "audit" | "login";
 export const ROUTES: Route[] = ["overview", "monitoring", "incidents", "reports", "devices", "settings", "system", "users", "audit", "login"];
 // links and bookmarks from the previous UIs keep working
 const ALIASES: Record<string, Route> = {
@@ -12,7 +12,7 @@ const ALIASES: Record<string, Route> = {
 export const ADMIN_ROUTES = ["settings", "system", "users", "audit"] as const;
 
 /** Permission each page needs (the backend enforces the same thing on the API it calls). */
-export const ROUTE_PERMISSION: Record<Exclude<Route, "login">, Permission> = {
+export const ROUTE_PERMISSION: Record<Exclude<Route, "login" | "notfound">, Permission> = {
   overview: "monitor:view",
   monitoring: "monitor:view",
   incidents: "violations:view",
@@ -26,8 +26,9 @@ export const ROUTE_PERMISSION: Record<Exclude<Route, "login">, Permission> = {
 
 const parse = (): Route => {
   const raw = location.hash.replace(/^#\/?/, "").split(/[?/]/)[0];
+  if (!raw) return "overview";
   const r = (ALIASES[raw] ?? raw) as Route;
-  return ROUTES.includes(r) ? r : "overview";
+  return ROUTES.includes(r) ? r : "notfound"; // an address that matches no page says so instead of showing another page
 };
 
 let guard: (() => boolean) | null = null;
