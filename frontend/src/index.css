@@ -1,58 +1,59 @@
 @import "tailwindcss";
 
-/* dark: follows the theme switch (data-theme), falling back to the OS setting */
+/* dark: the theme switch always sets data-theme on <html> (index.html and lib/theme.ts), following the OS until chosen */
 @custom-variant dark {
-  &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
     @slot;
   }
 }
 
 /*
- * Design tokens: "Obsidian & Iris" (v3). Dark by default (control-room use), full light theme.
- * One accent, iris violet, for interaction, selection and data: deliberately unlike every status
- * colour. Status colours mean one thing each: ok = compliant / healthy, warn = degraded / needs a
- * look, bad = violation / failure. The Mahindra logo is the only brand-red element.
- * Video always sits on the dark "stage". Runtime variables: the theme switches without a rebuild.
+ * Design tokens: "Plant Standard" (v4). Light by default, full dark theme, both AA-contrast.
+ * Mahindra red is identity only (logo, the active menu item). Interaction and data use one blue.
+ * Primary buttons are ink so they never read as an alarm. Status colours mean one thing each:
+ * ok = compliant / healthy, warn = degraded / needs a look, bad = violation / failure, and a status
+ * is never shown by colour alone. Video always sits on the dark "stage".
  */
 :root {
-  --topbar-h: 72px;
-  --bg: #08080a; --surface: #111114; --surface-2: #16161a; --surface-3: #1c1c22; --border: #24242b; --border-2: #303039;
-  --text: #f4f4f6; --text-2: #b6b6c0; --text-3: #85858f; --text-4: #575761;
-  --iris: #8b7cff; --iris-2: #5b4fd1; --iris-hover: #a597ff; --iris-soft: #1c1838; --iris-line: #393073; --iris-ink: #0b0820;
-  --pri: #f4f4f6; --pri-hover: #ffffff; --pri-ink: #0a0a0d;
-  --brand: #ff3b5c; --brand-soft: #2b0f16;
-  --nav: rgb(17 17 20 / 0.72); --nav-border: rgb(255 255 255 / 0.07);
-  --crit: #fb7185; --crit-soft: #2c1117; --crit-line: #5c2230;
-  --warn-c: #fbbf24; --warn-soft: #2a2008; --warn-line: #5a4512;
-  --ok-c: #34d399; --ok-soft: #0b2a20; --ok-line: #175a43;
-  --info: #8b7cff; --info-soft: #1c1838;
-  --glow: 0 0 0 1px rgb(139 124 255 / 0.35), 0 10px 40px -10px rgb(139 124 255 / 0.45);
-  --sh-xs: 0 1px 0 rgb(255 255 255 / 0.03);
-  --sh-md: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 16px 40px -20px rgb(0 0 0 / 0.7);
-  --sh-xl: 0 40px 100px -20px rgb(0 0 0 / 0.8), 0 0 0 1px rgb(255 255 255 / 0.05);
-  color-scheme: dark;
-}
-:root[data-theme="light"] {
-  --bg: #f6f6f8; --surface: #ffffff; --surface-2: #fafafb; --surface-3: #f0f0f4; --border: #e6e6ec; --border-2: #d6d6df;
-  --text: #0a0a0f; --text-2: #4a4a56; --text-3: #777784; --text-4: #a6a6b2;
-  --iris: #6d5bf6; --iris-2: #a99cff; --iris-hover: #5a47e6; --iris-soft: #f0edff; --iris-line: #d7d0ff; --iris-ink: #ffffff;
-  --pri: #0a0a0f; --pri-hover: #26262e; --pri-ink: #ffffff;
-  --brand: #e31837; --brand-soft: #fff0f2;
-  --nav: rgb(255 255 255 / 0.72); --nav-border: rgb(10 10 15 / 0.08);
-  --crit: #dc2626; --crit-soft: #fef1f1; --crit-line: #fbcaca;
-  --warn-c: #c76a06; --warn-soft: #fff6e8; --warn-line: #f6d59f;
-  --ok-c: #078a5e; --ok-soft: #e9f8f1; --ok-line: #b2e6cf;
-  --info: #6d5bf6; --info-soft: #f0edff;
-  --glow: 0 0 0 1px rgb(109 91 246 / 0.25), 0 8px 30px -8px rgb(109 91 246 / 0.35);
-  --sh-xs: 0 1px 2px rgb(10 10 15 / 0.04);
-  --sh-md: 0 1px 2px rgb(10 10 15 / 0.04), 0 12px 32px -18px rgb(10 10 15 / 0.18);
-  --sh-xl: 0 30px 80px -20px rgb(10 10 15 / 0.35), 0 4px 14px rgb(10 10 15 / 0.06);
+  --topbar-h: 60px;
+  --side-w: 248px;
+  --bg: #f4f5f7; --surface: #ffffff; --surface-2: #f8f9fb; --surface-3: #eceef2; --border: #dfe2e8; --border-2: #c9ced8;
+  --text: #14171f; --text-2: #444b5a; --text-3: #5f6776; --text-4: #8b93a3;
+  --iris: #1d5fd6; --iris-2: #4a86ee; --iris-hover: #1a4fb3; --iris-soft: #e8f0fd; --iris-line: #b9d0f7; --iris-ink: #ffffff;
+  --pri: #14171f; --pri-hover: #2b303c; --pri-ink: #ffffff;
+  --brand: #e31837; --brand-soft: #fdecef;
+  --nav: rgb(255 255 255 / 0.92); --nav-border: #dfe2e8;
+  --crit: #b42318; --crit-soft: #fdeceb; --crit-line: #f3b8b3;
+  --warn-c: #8a5300; --warn-soft: #fff4de; --warn-line: #f0cf8c;
+  --ok-c: #0b6b47; --ok-soft: #e6f5ee; --ok-line: #a9dcc5;
+  --info: #1d5fd6; --info-soft: #e8f0fd;
+  --glow: 0 0 0 1px rgb(29 95 214 / 0.25), 0 8px 24px -8px rgb(29 95 214 / 0.3);
+  --sh-xs: 0 1px 2px rgb(16 24 40 / 0.05);
+  --sh-md: 0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.06);
+  --sh-xl: 0 16px 48px -12px rgb(16 24 40 / 0.28), 0 2px 8px rgb(16 24 40 / 0.08);
   color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #0e1015; --surface: #161922; --surface-2: #1b1f2a; --surface-3: #20242f; --border: #2a2f3b; --border-2: #3a4050;
+  --text: #f1f3f7; --text-2: #c3c8d4; --text-3: #99a0b0; --text-4: #6f7788;
+  --iris: #7fa8f5; --iris-2: #4a86ee; --iris-hover: #a3c1f8; --iris-soft: #14233f; --iris-line: #2c4a80; --iris-ink: #0b1220;
+  --pri: #f1f3f7; --pri-hover: #ffffff; --pri-ink: #0e1015;
+  --brand: #ff4560; --brand-soft: #3a1219;
+  --nav: rgb(22 25 34 / 0.92); --nav-border: #2a2f3b;
+  --crit: #ff8a80; --crit-soft: #3a1714; --crit-line: #6b2d28;
+  --warn-c: #f2bd5b; --warn-soft: #36270a; --warn-line: #6a4d12;
+  --ok-c: #5fd6a2; --ok-soft: #0f2c21; --ok-line: #1f5a42;
+  --info: #7fa8f5; --info-soft: #14233f;
+  --glow: 0 0 0 1px rgb(127 168 245 / 0.35), 0 10px 32px -10px rgb(127 168 245 / 0.4);
+  --sh-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+  --sh-md: 0 1px 2px rgb(0 0 0 / 0.4), 0 1px 3px rgb(0 0 0 / 0.3);
+  --sh-xl: 0 24px 64px -16px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.05);
+  color-scheme: dark;
 }
 
 @theme {
-  --font-sans: "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   --color-canvas: var(--bg);
   --color-surface: var(--surface);
@@ -66,7 +67,7 @@
   --color-ink-3: var(--text-3);
   --color-ink-4: var(--text-4);
 
-  /* the one accent (iris): interaction, selection, data */
+  /* the one interaction + data colour */
   --color-accent: var(--iris);
   --color-accent-strong: var(--iris-hover);
   --color-accent-soft: var(--iris-soft);
@@ -100,7 +101,12 @@
   --color-stage-ink: #ececf1;
   --color-stage-ink-2: #9a9aa6;
 
-  --radius-card: 16px;
+  /* corners: one tighter scale for the whole app (8 px controls, 10 px cards) */
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 8px;
+  --radius-2xl: 10px;
+  --radius-card: 10px;
   --shadow-card: var(--sh-md);
   --shadow-md: var(--sh-md);
   --shadow-pop: var(--sh-xl);
@@ -112,15 +118,12 @@
   }
   body {
     margin: 0;
-    font-feature-settings: "ss01", "cv11";
     background: var(--color-canvas);
     color: var(--color-ink);
     font-family: var(--font-sans);
     font-size: 14px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
-    background-image: radial-gradient(1200px 500px at 50% -200px, var(--iris-soft), transparent 70%);
-    background-repeat: no-repeat;
   }
   h1, h2, h3, h4 {
     text-wrap: balance;
@@ -165,17 +168,17 @@
     position: sticky;
     top: 0;
     z-index: 1;
-    background: var(--color-surface);
+    background: var(--color-surface-2);
     text-align: left;
     font-size: 12px;
-    font-weight: 500;
+    font-weight: 600;
     color: var(--color-ink-3);
-    padding: 11px 18px;
+    padding: 10px 16px;
     border-bottom: 1px solid var(--color-line);
     white-space: nowrap;
   }
   .table td {
-    padding: 12px 18px;
+    padding: 12px 16px;
     border-bottom: 1px solid var(--color-line);
     vertical-align: middle;
   }

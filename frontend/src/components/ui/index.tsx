@@ -20,7 +20,7 @@ export type Tone = "neutral" | "accent" | "ok" | "warn" | "bad";
 type Variant = "primary" | "accent" | "outline" | "ghost" | "danger";
 const VARIANT: Record<Variant, string> = {
   primary: "border border-pri bg-pri text-pri-ink shadow-[var(--sh-xs)] hover:border-pri-hover hover:bg-pri-hover",
-  accent: "border border-accent bg-accent text-accent-ink shadow-[var(--sh-xs)] hover:border-accent-strong hover:bg-accent-strong",
+  accent: "border border-pri bg-pri text-pri-ink shadow-[var(--sh-xs)] hover:border-pri-hover hover:bg-pri-hover", // one primary style: ink
   outline: "border border-line-strong bg-surface text-ink shadow-[var(--sh-xs)] hover:border-ink-4",
   ghost: "border border-transparent text-ink-2 hover:bg-sunken hover:text-ink",
   danger: "border border-bad bg-bad text-white shadow-[var(--sh-xs)] hover:brightness-95",
@@ -343,7 +343,7 @@ export function Drawer({ open, onClose, title, subtitle, children, footer, width
   return createPortal(
     <div className="fixed inset-0 z-50 flex justify-end bg-[rgb(5_10_18/0.42)] p-0 backdrop-blur-[2px] sm:p-3" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div ref={ref} role="dialog" aria-modal="true" tabIndex={-1} style={{ maxWidth: width }}
-        className="animate-slide-in flex h-full w-full flex-col overflow-hidden border border-line bg-surface shadow-pop outline-none sm:rounded-[18px]">
+        className="animate-slide-in flex h-full w-full flex-col overflow-hidden border border-line bg-surface shadow-pop outline-none sm:rounded-xl">
         <header className="flex items-start justify-between gap-3 border-b border-line px-[22px] pt-5 pb-4">
           <div className="min-w-0">
             <h2 className="truncate text-[19px] font-semibold tracking-tight">{title}</h2>
@@ -396,7 +396,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             const [tn, ic] = tone(t);
             return (
               <div key={t.id} role={t.tone === "error" ? "alert" : "status"}
-                className="animate-rise pointer-events-auto flex w-full max-w-[380px] items-start gap-3 rounded-[14px] border border-line bg-surface px-4 py-3.5 shadow-pop">
+                className="animate-rise pointer-events-auto flex w-full max-w-[380px] items-start gap-3 rounded-xl border border-line bg-surface px-4 py-3.5 shadow-pop">
                 <span className={cx("flex size-8 shrink-0 items-center justify-center rounded-full", TAG[tn])}><Icon name={ic} size={16} /></span>
                 <div className="min-w-0 flex-1">
                   <div className="text-sm font-semibold">{t.title}</div>

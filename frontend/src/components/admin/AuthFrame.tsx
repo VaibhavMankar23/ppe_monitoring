@@ -8,31 +8,27 @@ const POINTS: [IconName, string, string][] = [
 ];
 
 /**
- * Frame for the screens outside the app (sign in, forced password change): an obsidian brand
- * panel with an iris glow on the left (hidden on narrow screens), the form on the right.
+ * Frame for the screens outside the app (sign in, forced password change): a brand panel on the left
+ * (hidden on narrow screens), the form on the right. Same tokens as the app, so light and dark both work.
  */
 export function AuthFrame({ title, intro, children, footer }: { title: string; intro?: ReactNode; children: ReactNode; footer?: ReactNode }) {
   return (
-    <main id="main" className="grid min-h-dvh bg-canvas p-0 min-[1000px]:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)] min-[1000px]:p-3">
-      <div className="relative hidden flex-col overflow-hidden rounded-[24px] bg-[#07070a] p-12 text-[#c9c9d4] min-[1000px]:flex">
-        <div aria-hidden="true" className="absolute -top-40 -right-32 size-[520px] rounded-full bg-[#6d5bf6] opacity-40 blur-[120px]" />
-        <div aria-hidden="true" className="absolute -bottom-48 -left-24 size-[420px] rounded-full bg-[#2fb8ff] opacity-[0.18] blur-[120px]" />
-        <div aria-hidden="true" className="absolute inset-0 opacity-[0.06] [background-image:radial-gradient(rgba(255,255,255,.9)_1px,transparent_1px)] [background-size:22px_22px]" />
-        <div className="relative flex items-center gap-2.5">
-          <img src="/mahindra-logo-on-dark.png" alt="Mahindra" className="h-[26px] w-auto" />
-          <span aria-hidden="true" className="h-5 w-px bg-white/15" />
-          <span className="text-[15px] font-bold tracking-tight text-white">PPE<span className="font-medium text-white/60"> Compliance</span></span>
+    <main id="main" className="grid min-h-dvh bg-canvas min-[1000px]:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
+      <div className="relative hidden flex-col overflow-hidden border-r border-line bg-surface p-12 min-[1000px]:flex">
+        <div aria-hidden="true" className="absolute inset-x-0 top-0 h-1 bg-brand" />
+        <div className="flex items-center gap-3">
+          <img src="/mahindra-logo.png" alt="Mahindra" className="h-[28px] w-auto dark:hidden" />
+          <img src="/mahindra-logo-on-dark.png" alt="Mahindra" className="hidden h-[28px] w-auto dark:block" />
+          <span className="border-l border-line-strong pl-3 text-sm leading-[1.2] font-semibold text-ink-2">PPE<br />Compliance</span>
         </div>
-        <div className="relative mt-auto">
-          <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[12px] font-bold tracking-[0.1em] text-[#b9afff] uppercase backdrop-blur">
-            <span className="size-1.5 rounded-full bg-[#34d399]" />Safety intelligence
-          </div>
-          <h2 className="max-w-[14ch] text-[46px] leading-[1.02] font-extrabold tracking-[-0.04em] text-white">Every worker home safe, every shift.</h2>
+        <div className="mt-auto">
+          <div className="eyebrow mb-3">Safety intelligence</div>
+          <h2 className="max-w-[16ch] text-[40px] leading-[1.1] font-bold tracking-[-0.02em] text-ink">Every worker home safe, every shift.</h2>
           <div className="mt-10 grid gap-3">
             {POINTS.map(([icon, t, d]) => (
-              <div key={t} className="flex items-start gap-4 rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4 backdrop-blur">
-                <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[#8b7cff]/20 text-[#c3baff]"><Icon name={icon} size={19} /></span>
-                <div><b className="block text-[14.5px] font-bold text-white">{t}</b><span className="text-[13.5px] text-white/60">{d}</span></div>
+              <div key={t} className="flex items-start gap-4 rounded-xl border border-line bg-surface-2 p-4">
+                <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent"><Icon name={icon} size={19} /></span>
+                <div><b className="block text-sm font-semibold text-ink">{t}</b><span className="text-[13.5px] text-ink-3">{d}</span></div>
               </div>
             ))}
           </div>
@@ -40,14 +36,14 @@ export function AuthFrame({ title, intro, children, footer }: { title: string; i
       </div>
       <div className="grid place-items-center px-6 py-10">
         <div className="grid w-full max-w-[400px] gap-5">
-          <img src="/mahindra-logo.png" alt="Mahindra" className="block h-[28px] w-auto justify-self-start dark:hidden" />
-          <img src="/mahindra-logo-on-dark.png" alt="" className="hidden h-[28px] w-auto justify-self-start dark:block" />
+          <img src="/mahindra-logo.png" alt="Mahindra" className="block h-[28px] w-auto justify-self-start min-[1000px]:hidden dark:hidden" />
+          <img src="/mahindra-logo-on-dark.png" alt="" className="hidden h-[28px] w-auto justify-self-start max-[999px]:dark:block" />
           <div>
-            <h1 className="text-[32px] leading-tight font-extrabold tracking-[-0.035em]">{title}</h1>
-            {intro && <p className="mt-2 text-[14.5px] text-ink-3">{intro}</p>}
+            <h1 className="text-[28px] leading-tight font-bold tracking-[-0.02em]">{title}</h1>
+            {intro && <p className="mt-2 text-sm text-ink-3">{intro}</p>}
           </div>
           {children}
-          {footer && <p className="m-0 text-[12.5px] text-ink-4">{footer}</p>}
+          {footer && <p className="m-0 text-[12.5px] text-ink-3">{footer}</p>}
         </div>
       </div>
     </main>

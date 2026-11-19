@@ -315,7 +315,7 @@ export function UsersPage() {
             </Empty>
           ) : (
             <div className="scroll-thin overflow-x-auto">
-              <table className="table min-w-[1040px]">
+              <table className="table min-w-[980px]">
                 <thead>
                   <tr>
                     <th>Username</th><th>Role</th><th>Status</th><th>Password</th>
@@ -348,7 +348,7 @@ export function UsersPage() {
                         <td>
                           {u.must_change_password
                             ? <Tag tone="warn" icon="key" title="This person must set their own password at the next sign-in">Must change</Tag>
-                            : <span className="text-ink-3">Set by user</span>}
+                            : <span className="whitespace-nowrap text-ink-3">Set by user</span>}
                         </td>
                         <td className="num text-right">{u.active_sessions ?? 0}</td>
                         <td className="whitespace-nowrap">

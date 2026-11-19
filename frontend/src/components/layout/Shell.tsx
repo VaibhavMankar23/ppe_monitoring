@@ -8,17 +8,19 @@ import { useAuth } from "../../state/auth";
 import { useMonitor } from "../../state/monitor";
 import type { Violation } from "../../types";
 import { passwordAcceptable, PasswordField, PolicyChecklist } from "../admin/PasswordPolicy";
-import { Button, cx, Dialog, Field, Icon, lockScroll, Notice, useToast, type IconName } from "../ui";
+import { Button, cx, Dialog, Field, Icon, Kbd, lockScroll, Notice, useToast, type IconName } from "../ui";
 
 type Page = Exclude<Route, "login" | "notfound">;
 
-/** v3 information architecture: five workspaces, ordered by how often each is used. */
-const WORKSPACES: { key: string; label: string; icon: IconName; routes: { route: Page; label: string; icon: IconName }[] }[] = [
-  { key: "command", label: "Command", icon: "overview", routes: [{ route: "overview", label: "Command", icon: "overview" }] },
-  { key: "live", label: "Live", icon: "monitoring", routes: [{ route: "monitoring", label: "Live", icon: "monitoring" }] },
-  { key: "review", label: "Review", icon: "incidents", routes: [{ route: "incidents", label: "Review", icon: "incidents" }] },
-  { key: "insights", label: "Insights", icon: "reports", routes: [{ route: "reports", label: "Insights", icon: "reports" }] },
-  { key: "setup", label: "Setup", icon: "gear", routes: [
+/** Information architecture (v4): pages grouped by the job in hand, in the left menu. */
+const GROUPS: { key: string; label: string; routes: { route: Page; label: string; icon: IconName }[] }[] = [
+  { key: "operate", label: "Operate", routes: [
+    { route: "overview", label: "Command", icon: "overview" },
+    { route: "monitoring", label: "Live", icon: "monitoring" },
+    { route: "incidents", label: "Review", icon: "incidents" },
+  ] },
+  { key: "analyse", label: "Analyse", routes: [{ route: "reports", label: "Insights", icon: "reports" }] },
+  { key: "configure", label: "Configure", routes: [
     { route: "devices", label: "Cameras & zones", icon: "devices" },
     { route: "settings", label: "Detection", icon: "sliders" },
     { route: "system", label: "System health", icon: "pulse" },
@@ -26,9 +28,9 @@ const WORKSPACES: { key: string; label: string; icon: IconName; routes: { route:
     { route: "audit", label: "Audit trail", icon: "log" },
   ] },
 ];
-const ITEMS = WORKSPACES.flatMap((w) => w.routes.map((r) => ({ ...r, group: w.label })));
-const WORKSPACE_OF = Object.fromEntries(WORKSPACES.flatMap((w) => w.routes.map((r) => [r.route, w]))) as Record<Page, (typeof WORKSPACES)[number]>;
-const isAdmin = (r: Page) => WORKSPACE_OF[r]?.key === "setup";
+const ITEMS = GROUPS.flatMap((g) => g.routes.map((r) => ({ ...r, group: g.label })));
+const GROUP_OF = Object.fromEntries(GROUPS.flatMap((g) => g.routes.map((r) => [r.route, g]))) as Record<Page, (typeof GROUPS)[number]>;
+const isAdmin = (r: Page) => GROUP_OF[r]?.key === "configure";
 
 const RouteCtx = createContext<Page>("overview");
 
@@ -64,8 +66,8 @@ function useDismiss(open: boolean, close: () => void) {
   return ref;
 }
 
-const NAV_ICON = "relative grid size-9 place-items-center rounded-xl text-ink-2 transition-colors hover:bg-sunken hover:text-ink";
-const MENU = "animate-rise absolute top-[calc(100%+12px)] right-0 z-[60] overflow-hidden rounded-2xl border border-line bg-surface text-ink shadow-pop";
+const NAV_ICON = "relative grid size-10 place-items-center rounded-lg text-ink-2 transition-colors hover:bg-sunken hover:text-ink";
+const MENU = "animate-rise absolute top-[calc(100%+8px)] right-0 z-[60] overflow-hidden rounded-xl border border-line bg-surface text-ink shadow-pop";
 
 // ------------------------------------------------------------------ notifications
 
@@ -131,7 +133,7 @@ function SoundButton() {
     return (
       // on press, not click: the press itself unlocks sound and this button is replaced before a click lands
       <button type="button" onPointerDown={() => setOn(true)} onClick={() => setOn(true)}
-        className="inline-flex h-9 items-center gap-1.5 rounded-full border border-warn-line bg-warn-soft px-3 text-[12.5px] font-semibold whitespace-nowrap text-warn hover:brightness-95"
+        className="inline-flex h-8 items-center gap-1.5 rounded-full border border-warn-line bg-warn-soft px-3 text-[12.5px] font-semibold whitespace-nowrap text-warn hover:brightness-95"
         title="The browser blocks sound until this page is clicked once" aria-label="Click to turn on sound">
         <Icon name="volumeOff" size={16} /><span className="hidden 2xl:inline">Click to turn on sound</span><span className="2xl:hidden">Sound off</span>
       </button>
@@ -300,13 +302,13 @@ function AccountMenu() {
   return (
     <div ref={ref} className="relative">
       <button type="button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)} title={user.username}
-        className="grid size-9 place-items-center rounded-full bg-[linear-gradient(140deg,var(--iris),var(--iris-2))] text-xs font-bold text-white ring-2 ring-surface">
+        className="grid size-9 place-items-center rounded-full bg-ink text-xs font-bold text-canvas">
         {initials(user.username)}
       </button>
       {open && (
         <div role="menu" className={cx(MENU, "w-[290px]")}>
           <div className="flex items-center gap-3 px-4 py-3.5">
-            <span className="grid size-10 shrink-0 place-items-center rounded-full bg-[linear-gradient(140deg,var(--iris),var(--iris-2))] text-[13px] font-bold text-white">{initials(user.username)}</span>
+            <span className="grid size-10 shrink-0 place-items-center rounded-full bg-ink text-[13px] font-bold text-canvas">{initials(user.username)}</span>
             <div className="min-w-0"><b className="block truncate text-sm font-semibold">{user.username}</b><span className="text-[12.5px] text-ink-3">{user.role_label}</span></div>
           </div>
           <div className="mx-3 mb-2 rounded-xl bg-sunken px-3 py-2.5 text-[12.5px] text-ink-2">
@@ -337,7 +339,7 @@ function LiveChip() {
   const text = !connected ? "Offline" : bad ? `${bad} unsafe now` : down ? `${down} camera${down === 1 ? "" : "s"} down` : "All clear";
   return (
     <a href={href("monitoring")} title={`${live} of ${streams.length} cameras live`}
-      className={cx("hidden h-9 items-center gap-2 rounded-full border px-3 text-[12.5px] font-semibold no-underline md:inline-flex",
+      className={cx("hidden h-8 items-center gap-2 rounded-full border px-3 text-[12.5px] font-semibold no-underline md:inline-flex",
         tone === "ok" ? "border-ok-line bg-ok-soft text-ok" : tone === "warn" ? "border-warn-line bg-warn-soft text-warn" : "border-bad-line bg-bad-soft text-bad")}>
       <span className={cx("size-[7px] rounded-full bg-current", tone === "ok" && "live-ping")} />
       {text}<span className="hidden font-medium opacity-70 2xl:inline">· <span className="font-mono">{live}/{streams.length}</span> cameras live</span>
@@ -345,10 +347,57 @@ function LiveChip() {
   );
 }
 
-function TopNav({ route }: { route: Page }) {
-  const { can } = useAuth();
+function Sidebar({ route, open, onClose }: { route: Page; open: boolean; onClose: () => void }) {
+  const { can, user } = useAuth();
+  const count = useOpenIncidents(can("violations:view"));
+  const groups = GROUPS.map((g) => ({ ...g, routes: g.routes.filter((r) => can(ROUTE_PERMISSION[r.route])) })).filter((g) => g.routes.length);
+  return (
+    <>
+      {open && <div className="fixed inset-0 z-40 bg-[rgb(16_24_40/0.5)] lg:hidden" onClick={onClose} aria-hidden="true" />}
+      <aside id="side-nav" aria-label="Main"
+        className={cx("no-print fixed inset-y-0 left-0 z-50 flex w-[272px] flex-col gap-1 overflow-y-auto border-r border-line bg-surface px-3 py-4 transition-transform duration-200",
+          "lg:sticky lg:top-0 lg:z-20 lg:h-dvh lg:w-auto lg:translate-x-0 lg:transition-none", open ? "translate-x-0 shadow-pop" : "-translate-x-full")}>
+        <a href={href("overview")} aria-label="Mahindra PPE Compliance home" className="mb-2 flex items-center gap-3 border-b border-line px-2 pt-1 pb-4 no-underline">
+          <img src="/mahindra-logo.png" alt="Mahindra" className="h-[26px] w-auto dark:hidden" />
+          <img src="/mahindra-logo-on-dark.png" alt="Mahindra" className="hidden h-[26px] w-auto dark:block" />
+          <span className="border-l border-line-strong pl-3 text-[13px] leading-[1.2] font-semibold text-ink-2">PPE<br />Compliance</span>
+        </a>
+        <nav aria-label="Pages" className="flex flex-col">
+          {groups.map((g) => (
+            <div key={g.key} className="flex flex-col gap-0.5">
+              <div className="eyebrow px-2.5 pt-4 pb-1.5 text-[11px] tracking-[0.08em]">{g.label}</div>
+              {g.routes.map((r) => {
+                const active = r.route === route;
+                return (
+                  <a key={r.route} href={href(r.route)} aria-current={active ? "page" : undefined} onClick={onClose}
+                    className={cx("relative flex h-10 items-center gap-3 rounded-lg px-2.5 text-sm font-medium no-underline transition-colors",
+                      active ? "bg-brand-soft font-semibold text-ink" : "text-ink-2 hover:bg-sunken hover:text-ink")}>
+                    {active && <span aria-hidden="true" className="absolute top-2 bottom-2 -left-3 w-1 rounded-r bg-brand" />}
+                    <Icon name={r.icon} size={18} />{r.label}
+                    {r.route === "incidents" && !!count && (
+                      <span title={`${count.toLocaleString("en-IN")} incidents not reviewed yet`} aria-label={`${count} waiting`}
+                        className="num ml-auto grid h-5 min-w-6 place-items-center rounded-full bg-bad px-1.5 text-xs leading-none font-bold text-surface">
+                        {count >= 10_000 ? `${Math.floor(count / 1000)}k` : count >= 1000 ? `${(count / 1000).toFixed(1)}k` : count}
+                      </span>
+                    )}
+                  </a>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+        {user && (
+          <div className="mt-auto border-t border-line px-2 pt-3 text-xs text-ink-3">
+            Signed in as <b className="font-semibold text-ink">{user.username}</b><br />{user.role_label}
+          </div>
+        )}
+      </aside>
+    </>
+  );
+}
+
+function TopBar({ onMenu }: { onMenu: () => void }) {
   const [search, setSearch] = useState(false);
-  const open = useOpenIncidents(can("violations:view"));
   const bar = useRef<HTMLElement>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -364,114 +413,80 @@ function TopNav({ route }: { route: Page }) {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const current = WORKSPACE_OF[route]?.key;
-  const spaces = WORKSPACES.map((w) => ({ ...w, routes: w.routes.filter((r) => can(ROUTE_PERMISSION[r.route])) })).filter((w) => w.routes.length);
-
   return (
-    <header ref={bar} className="no-print sticky top-0 z-30 px-3 pt-3 pb-2 sm:px-5">
-      <div className="mx-auto flex max-w-[1560px] flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border border-[var(--nav-border)] bg-[var(--nav)] px-3 py-2 shadow-pop backdrop-blur-xl backdrop-saturate-150 lg:flex-nowrap">
-        <a href={href("overview")} aria-label="Mahindra PPE Compliance home" className="flex shrink-0 items-center gap-2.5 pl-1.5 no-underline">
-          <img src="/mahindra-logo.png" alt="Mahindra" className="h-[22px] w-auto dark:hidden" />
-          <img src="/mahindra-logo-on-dark.png" alt="Mahindra" className="hidden h-[22px] w-auto dark:block" />
-          <span aria-hidden="true" className="h-5 w-px bg-line-strong" />
-          <span className="text-[14px] font-bold tracking-tight text-ink">PPE<span className="font-medium text-ink-3"> Compliance</span></span>
-        </a>
-
-        <nav aria-label="Workspaces" className="order-3 -mx-1 flex w-full gap-1 overflow-x-auto [scrollbar-width:none] lg:order-none lg:mx-auto lg:w-auto">
-          {spaces.map((w) => {
-            const active = w.key === current;
-            const count = w.key === "review" ? open : null;
-            return (
-              <a key={w.key} href={href(w.routes[0].route)} aria-current={active ? "page" : undefined}
-                className={cx("flex h-9 items-center gap-2 rounded-xl px-3.5 text-[13.5px] font-semibold whitespace-nowrap no-underline transition-colors",
-                  active ? "bg-ink text-canvas" : "text-ink-2 hover:bg-sunken hover:text-ink")}>
-                <Icon name={w.icon} size={17} />{w.label}
-                {!!count && (
-                  <span title={`${count.toLocaleString("en-IN")} incidents not reviewed yet`}
-                    className={cx("rounded-full px-1.5 font-mono text-[11px] leading-[18px] font-semibold", active ? "bg-bad text-white" : "bg-bad-soft text-bad")}>
-                    {count >= 10_000 ? `${Math.floor(count / 1000)}k` : count >= 1000 ? `${(count / 1000).toFixed(1)}k` : count}
-                  </span>
-                )}
-              </a>
-            );
-          })}
-        </nav>
-
-        <div className="ml-auto flex shrink-0 items-center gap-1 lg:ml-0">
-          <LiveChip />
-          <button type="button" onClick={() => setSearch(true)} className={NAV_ICON} aria-label="Search (Ctrl K)" title="Search (Ctrl K)"><Icon name="search" size={18} /></button>
-          <Bell />
-          <SoundButton />
-          <ThemeButton />
-          <span className="mx-1 h-6 w-px bg-line" aria-hidden="true" />
-          <AccountMenu />
-        </div>
+    <header ref={bar} className="no-print sticky top-0 z-30 flex min-h-[60px] items-center gap-3 border-b border-line bg-[var(--nav)] px-4 py-2 backdrop-blur-md sm:px-6">
+      <button type="button" onClick={onMenu} className={cx(NAV_ICON, "border border-line-strong lg:hidden")} aria-label="Open menu" aria-controls="side-nav">
+        <Icon name="menu" size={18} />
+      </button>
+      <button type="button" onClick={() => setSearch(true)} aria-label="Search (Ctrl K)"
+        className="hidden h-10 w-full max-w-[320px] items-center gap-2 rounded-lg border border-line-strong bg-surface px-3 text-left text-sm text-ink-3 hover:border-ink-4 md:flex">
+        <Icon name="search" size={16} /><span className="flex-1">Search cameras, pages</span><Kbd>Ctrl K</Kbd>
+      </button>
+      <div className="ml-auto flex shrink-0 items-center gap-1">
+        <LiveChip />
+        <button type="button" onClick={() => setSearch(true)} className={cx(NAV_ICON, "md:hidden")} aria-label="Search (Ctrl K)"><Icon name="search" size={18} /></button>
+        <Bell />
+        <SoundButton />
+        <ThemeButton />
+        <span className="mx-1 h-6 w-px bg-line" aria-hidden="true" />
+        <AccountMenu />
       </div>
       <CommandPalette open={search} onClose={() => setSearch(false)} />
     </header>
   );
 }
 
-/** App frame (v3): floating glass navigation above the page. */
+/** App frame (v4): left navigation, slim top bar, page. The menu becomes a drawer below 1024 px. */
 export function Shell({ route, children }: { route: Page; children: ReactNode }) {
+  const [menu, setMenu] = useState(false);
   // safety net: changing page with nothing open always gives the page its scrolling back
-  useEffect(() => { lockScroll(); }, [route]);
+  useEffect(() => { lockScroll(); setMenu(false); }, [route]);
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMenu(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menu]);
   return (
     <RouteCtx.Provider value={route}>
-      <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-surface focus:px-3 focus:py-2 focus:shadow-pop">
+      <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[80] focus:rounded-md focus:bg-surface focus:px-3 focus:py-2 focus:shadow-pop">
         Skip to content
       </a>
-      <div className="min-h-dvh">
-        <TopNav route={route} />
-        <main id="main" tabIndex={-1} className="outline-none">{children}</main>
+      <div className="min-h-dvh lg:grid lg:grid-cols-[var(--side-w)_minmax(0,1fr)]">
+        <Sidebar route={route} open={menu} onClose={() => setMenu(false)} />
+        <div className="flex min-h-dvh min-w-0 flex-col">
+          <TopBar onMenu={() => setMenu(true)} />
+          <main id="main" tabIndex={-1} className="min-w-0 flex-1 outline-none">{children}</main>
+        </div>
       </div>
     </RouteCtx.Provider>
   );
 }
 
-function SetupTabs({ route }: { route: Page }) {
-  const { can } = useAuth();
-  const items = WORKSPACES.find((w) => w.key === "setup")!.routes.filter((r) => can(ROUTE_PERMISSION[r.route]));
-  return (
-    <nav aria-label="Setup" className="no-print mb-6 flex gap-1 overflow-x-auto rounded-2xl border border-line bg-surface p-1 shadow-[var(--sh-xs)] [scrollbar-width:none] sm:inline-flex">
-      {items.map((r) => (
-        <a key={r.route} href={href(r.route)} aria-current={r.route === route ? "page" : undefined}
-          className={cx("flex h-9 items-center gap-2 rounded-xl px-3.5 text-[13.5px] font-semibold whitespace-nowrap no-underline",
-            r.route === route ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-sunken hover:text-ink")}>
-          <Icon name={r.icon} size={16} />{r.label}
-        </a>
-      ))}
-    </nav>
-  );
-}
-
 /**
- * Standard page frame (v3): workspace eyebrow, a large title, one-line description and actions,
- * optional tabs and toolbar, then the content. Setup pages get the Setup tab strip.
+ * Standard page frame (v4): group eyebrow, title, one-line description and actions, optional tabs and
+ * toolbar, then the content.
  */
 export function Page({ title, description, actions, toolbar, tabs, children, flush, wide }:
   { title: string; description?: ReactNode; actions?: ReactNode; toolbar?: ReactNode; tabs?: ReactNode; children: ReactNode; flush?: boolean; wide?: boolean }) {
   const route = useContext(RouteCtx);
-  const max = wide ? "max-w-[1760px]" : "max-w-[1560px]";
-  const ws = WORKSPACE_OF[route];
+  const max = wide ? "max-w-[1760px]" : "max-w-[1480px]";
+  const group = GROUP_OF[route];
   return (
     <div className="flex min-h-[calc(100dvh-var(--topbar-h))] flex-col">
-      <div className={cx("mx-auto w-full px-4 pt-5 sm:px-7", max)}>
-        {isAdmin(route) && <SetupTabs route={route} />}
-        <div className="mb-7 flex flex-wrap items-end gap-4">
+      <div className={cx("mx-auto w-full px-4 pt-6 sm:px-6", max)}>
+        <div className="mb-6 flex flex-wrap items-end gap-x-6 gap-y-3">
           <div className="min-w-0">
-            <div className="mb-2 flex items-center gap-2 text-[12px] font-semibold tracking-[0.12em] text-accent uppercase">
-              <Icon name={ws?.icon ?? "overview"} size={14} />{ws?.label ?? ""}
-            </div>
-            <h1 className="text-[26px] leading-[1.1] font-bold tracking-[-0.03em] sm:text-[34px]">{title}</h1>
-            {description && <p className="mt-2 max-w-3xl text-[14.5px] text-ink-3">{description}</p>}
+            <div className="eyebrow mb-1">{group?.label ?? ""}</div>
+            <h1 className="text-2xl leading-[1.2] font-bold tracking-[-0.01em] sm:text-[26px]">{title}</h1>
+            {description && <p className="mt-1 max-w-3xl text-sm text-ink-3">{description}</p>}
           </div>
           {actions && <div className="no-print ml-auto flex flex-wrap items-center gap-2">{actions}</div>}
         </div>
         {tabs && <div className="no-print mb-5 border-b border-line">{tabs}</div>}
         {toolbar && <div className="no-print mb-5 flex flex-wrap items-center gap-2.5">{toolbar}</div>}
       </div>
-      <div className={cx("mx-auto min-h-0 w-full flex-1", max, !flush && "px-4 pb-16 sm:px-7")}>
+      <div className={cx("mx-auto min-h-0 w-full flex-1", max, !flush && "px-4 pb-12 sm:px-6")}>
         {children}
       </div>
     </div>
