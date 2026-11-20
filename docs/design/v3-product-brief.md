@@ -71,7 +71,7 @@ Testing runs on one camera; the plant will run 40-45. What changes at that scale
 | 45 live video tiles at once overload the browser, the network and the server | **Paged video wall**: 4 / 9 / 16 tiles per page, frame rate drops as tiles shrink (8 → 5 → 3 fps), only on-screen tiles stream |
 | Nobody can watch 45 videos | **Fleet board**: every camera as a small status cell (unsafe / not delivering / clear / stopped), all 45 on one screen, no video cost. On Command and as Live's "Board" view |
 | A control-room screen must cover all cameras unattended | **Auto-cycle**: the wall turns the page every 20 s, and **holds while anyone is unsafe** so an alert is never cycled away |
-| The important cameras get lost in a long list | Cameras keep **their configured order everywhere** (decided 29 Oct 2026: re-sorting by status moved tiles around and made the page jump); colour, the Act now list and the fleet legend show what needs attention |
+| The important cameras get lost in a long list | Cameras are listed in **natural order by name everywhere** (decided 20 Nov 2026, replacing "configured order": numbers ascending, then letters, "Gate 2" before "Gate 10"). The order never depends on status, so tiles still do not jump (the 29 Oct reason); colour, the Act now list and the fleet legend show what needs attention |
 | Long camera names make sentences unreadable | Status sentences name at most 3 cameras ("A, B, C and 4 more"); the hero shows up to 4 unsafe cameras live, with a link to the rest |
 | Finding one camera among 45 | Search on Live and on Cameras & zones; "Needs attention" / "Turned off" filters; Ctrl K finds any camera |
 | "Down" mixed up with "switched off on purpose" | "Down" counts only cameras that should be running but aren't |

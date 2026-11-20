@@ -1,3 +1,4 @@
+import { sortCameras } from "../lib/cameras";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { wsUrl } from "../lib/api";
 import { freshToken, refreshSession } from "../lib/auth";
@@ -119,7 +120,7 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
           return;
         }
         const { streams: s, type: _type, ...rest } = msg;
-        setStreams(s);
+        setStreams(sortCameras(s));
         setInfo(rest);
       };
       ws.onclose = (ev) => {

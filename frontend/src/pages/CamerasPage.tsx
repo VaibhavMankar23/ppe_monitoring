@@ -1,3 +1,4 @@
+import { sortCameras } from "../lib/cameras";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CameraDrawer, copyOf, type CameraTab } from "../components/cameras/CameraDrawer";
 import { sourceSummary } from "../components/cameras/SourceForm";
@@ -75,7 +76,7 @@ export function CamerasPage() {
     setStale(false);
   }, []);
 
-  const cameras: RawConfig[] = useMemo(() => doc?.config.streams ?? [], [doc]);
+  const cameras: RawConfig[] = useMemo(() => sortCameras((doc?.config.streams ?? []) as Array<RawConfig & { id: string; name?: string }>), [doc]);
   const live = useMemo(() => new Map(liveStreams.map((s) => [s.id, s])), [liveStreams]);
 
   const toggle = async (id: string, enabled: boolean) => {

@@ -6,6 +6,12 @@ All notable changes to the PPE Compliance Monitor. Dates are IST.
 
 Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and acceptance testing.
 
+### Camera order (Nov 2026)
+- **Changed:** cameras are listed in natural order by name everywhere (Live wall and board, fleet board, Cameras
+  and zones, System health, filters, search): numbers ascending (51, 54, 86, 100), then names with letters, and
+  "Gate 2" before "Gate 10". Before, the order was the one they were added in. The order depends only on the name,
+  never on status, so tiles still do not move when a camera goes down.
+
 ### Trust and deployment (Nov 2026)
 - **Fixed:** System health showed 0 % host CPU and counted only the Python process. rtsps:// cameras are decoded by
   separate ffmpeg processes, so "This app" CPU and memory were about a third and a half of the real figures. One

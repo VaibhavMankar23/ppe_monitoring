@@ -1,3 +1,4 @@
+import { sortCameras } from "../lib/cameras";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Page } from "../components/layout/Shell";
 import { Button, cx, Empty, Notice, Panel, PanelHeader, Segmented, Skeleton, Stat, StatusDot, Tag, type Tone } from "../components/ui";
@@ -264,7 +265,7 @@ export function SystemPage() {
 
   const cap = CAPACITY[health.capacity.state] ?? CAPACITY.ok;
   const host = health.host;
-  const cams = health.cameras; // configured camera order; the status column shows problems
+  const cams = sortCameras(health.cameras); // natural order by name; the status column shows problems
   const running = health.cameras.filter((c) => c.running).length;
   const troubled = health.cameras.filter((c) => statusOf(c.status).rank < 2).length;
   const staleFor = lastOk == null ? 0 : Math.max(0, Math.round(now - lastOk));
