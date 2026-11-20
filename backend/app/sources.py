@@ -242,8 +242,55 @@ class FFmpegPipeSource(_NetworkCapture):
 
     PIPE_MAX_FPS = 8.0  # frames/s sent through the pipe; the detector uses ~3 per camera
 
+    # Option names differ between ffmpeg versions (the I/O timeout was -stimeout, then -timeout, and ffmpeg 7.x
+    # refuses names it does not know with "Option not found"). Ask the installed ffmpeg once which ones it accepts.
+    _accepted: ClassVar[dict[str, bool]] = {}
+    _TIMEOUT_NAMES: ClassVar[tuple[str, ...]] = ("-timeout", "-stimeout", "-rw_timeout")
+
+    @classmethod
+    def _accepts(cls, *opt: str) -> bool:
+        key = " ".join(opt)
+        if key not in cls._accepted:
+            try:  # a closed local port: ffmpeg validates the options first, then fails fast with "Connection refused"
+                r = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-rtsp_transport", "tcp", *opt, "-i",
+                                    "rtsps://127.0.0.1:1/x", "-t", "1", "-f", "null", "-"],
+                                   capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
+                cls._accepted[key] = b"not found" not in r.stderr and b"Unrecognized option" not in r.stderr
+            except (OSError, subprocess.TimeoutExpired):
+                return False  # ffmpeg missing: not cached, open() reports it
+        return cls._accepted[key]
+
+    # Names a real camera connection made ffmpeg answer "Option X not found" for (that check runs only after the
+    # connection succeeds, so the probe above cannot see it). Learned once, left out from the next reconnect on.
+    _rejected: ClassVar[set[str]] = set()
+
+    @classmethod
+    def _learn_rejected(cls, err_text: str) -> bool:
+        import re
+
+        names = {m.lstrip("-") for m in re.findall(r"Option '?(-?\w+)'? not found", err_text)}
+        names |= {m.lstrip("-") for m in re.findall(r"Unrecognized option '(-?\w+)'", err_text)}
+        new = {n for n in names if n in ("tls_verify", "timeout", "stimeout", "rw_timeout")} - cls._rejected
+        cls._rejected |= new
+        return bool(new)
+
     def _input_args(self) -> list[str]:
-        return ["-rtsp_transport", "tcp", "-tls_verify", "0", "-timeout", str(int(self.cfg.timeout * 1_000_000))]
+        args = ["-rtsp_transport", "tcp"]
+        if "tls_verify" not in self._rejected and self._accepts("-tls_verify", "0"):
+            args += ["-tls_verify", "0"]
+        us = str(int(self.cfg.timeout * 1_000_000))
+        for name in self._TIMEOUT_NAMES:
+            if name.lstrip("-") not in self._rejected and self._accepts(name, us):
+                args += [name, us]
+                break
+        return args  # without a timeout option the read loop's own deadline still triggers a reconnect
+
+    def _err_text(self) -> str:
+        try:
+            self._err.seek(0)
+            return self._err.read().decode("utf-8", "replace")
+        except Exception:
+            return ""
 
     def _err_tail(self) -> str:
         try:
@@ -306,6 +353,9 @@ class FFmpegPipeSource(_NetworkCapture):
                 tail = self._err_tail()
                 if tail:
                     log.warning("ffmpeg (%s): %s", self.describe(), tail)
+                if self._learn_rejected(self._err_text()):
+                    log.warning("this ffmpeg does not accept %s: leaving it out from the next reconnect on",
+                                ", ".join(sorted(self._rejected)))
                 return None
             buf += chunk
         return np.frombuffer(buf, np.uint8).reshape(h, w, 3)

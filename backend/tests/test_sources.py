@@ -317,3 +317,30 @@ def test_rtsps_open_error_hides_password(tmp_path, monkeypatch):
 def test_plain_rtsp_still_uses_opencv():
     from app.sources import RTSPStreamSource, make_source
     assert type(make_source(SourceConfig(type="rtsp", uri="rtsp://10.0.0.9/x"))) is RTSPStreamSource
+
+
+def test_rtsps_drops_ffmpeg_options_the_installed_ffmpeg_rejects(tmp_path, monkeypatch):
+    """ffmpeg 7.x answers "Option not found" for names it does not know: the app must leave those out."""
+    from app.sources import FFmpegPipeSource, make_source
+    ffprobe, ffmpeg = tmp_path / "ffprobe", tmp_path / "ffmpeg"
+    ffprobe.write_text("#!/bin/sh\necho '{}'\n")
+    ffmpeg.write_text('#!/bin/sh\ncase "$*" in *-timeout*|*-stimeout*) echo "Option timeout not found." >&2; exit 1;; esac\nexit 0\n')
+    for f in (ffprobe, ffmpeg):
+        f.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+    monkeypatch.setattr(FFmpegPipeSource, "_accepted", {})
+    src = make_source(SourceConfig(type="rtsp", uri="rtsps://10.0.0.9:554/x", timeout=5))
+    args = src._input_args()
+    assert "-timeout" not in args and "-stimeout" not in args
+    assert args[:4] == ["-rtsp_transport", "tcp", "-tls_verify", "0"] and args[-2:] == ["-rw_timeout", "5000000"]
+
+
+def test_rtsps_learns_option_rejected_after_connecting():
+    from app.sources import FFmpegPipeSource
+    monkey = FFmpegPipeSource
+    monkey._rejected = set()
+    assert monkey._learn_rejected("Option tls_verify not found.\nError opening input files: Option not found") is True
+    assert monkey._rejected == {"tls_verify"}
+    assert monkey._learn_rejected("Option tls_verify not found.") is False  # nothing new
+    assert monkey._learn_rejected("Option frobnicate not found.") is False  # only the options we pass
+    monkey._rejected = set()
