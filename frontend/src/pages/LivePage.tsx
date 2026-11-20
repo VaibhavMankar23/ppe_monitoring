@@ -90,7 +90,9 @@ export function LivePage() {
   return (
     <Page title="Live floor" wide
       description={streams.length
-        ? `${live.length} of ${streams.length} camera${streams.length === 1 ? "" : "s"} online · ${counts.violating ? `${counts.violating} with someone unsafe` : "nobody unsafe"}${latency !== null ? ` · ${latency} ms camera-to-screen` : ""}`
+        ? live.length === 0
+          ? `0 of ${streams.length} camera${streams.length === 1 ? "" : "s"} online · nobody is being monitored right now`  // never "nobody unsafe" with no one watching
+          : `${live.length} of ${streams.length} camera${streams.length === 1 ? "" : "s"} online · ${counts.violating ? `${counts.violating} with someone unsafe` : "nobody unsafe in view"}${latency !== null ? ` · ${latency} ms camera-to-screen` : ""}`
         : "Every camera, as the detector sees it right now."}
       actions={<>
         <Segmented<View> label="View" value={view} onChange={setView} options={[{ value: "wall", label: "Video wall" }, { value: "board", label: `Board · ${streams.length}` }]} />

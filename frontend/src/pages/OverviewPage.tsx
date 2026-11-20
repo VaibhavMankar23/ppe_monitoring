@@ -254,13 +254,23 @@ function ActNow({ unsafe, onOpen, online, lastAt }: { unsafe: StreamInfo[]; onOp
         </a>
       </div>
       {unsafe.length === 0 ? (
+        online === 0 ? (
+          <div className="grid flex-1 place-items-center rounded-lg border border-dashed border-bad-line bg-bad-soft px-4 py-6 text-center" role="alert">
+            <div>
+              <Icon name="alert" size={22} className="mx-auto text-bad" />
+              <p className="mt-2 text-sm font-semibold text-ink">No camera is watching</p>
+              <p className="mt-0.5 text-[13px] text-ink-3">Nobody can be checked right now. Open System health.</p>
+            </div>
+          </div>
+        ) : (
         <div className="grid flex-1 place-items-center rounded-lg border border-dashed border-ok-line bg-ok-soft px-4 py-6 text-center">
           <div>
             <Icon name="check" size={22} className="mx-auto text-ok" />
-            <p className="mt-2 text-sm font-semibold text-ink">Nobody is unsafe right now</p>
+            <p className="mt-2 text-sm font-semibold text-ink">Nobody unsafe in view</p>
             <p className="mt-0.5 text-[13px] text-ink-3">{online} camera{online === 1 ? "" : "s"} watching{lastAt ? <> · last incident {fmtAgo(lastAt, Date.now() / 1000)}</> : null}</p>
           </div>
         </div>
+        )
       ) : (
         <ul className="scroll-thin max-h-[300px] min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1 lg:max-h-none">
           {unsafe.map((s) => {
@@ -337,6 +347,7 @@ export function OverviewPage() {
   const avgPct = avgDay ? Math.round((Math.abs(today - avgDay) / avgDay) * 100) : null;
 
   const status = !connected ? { tone: "bad" as const, title: "Live connection lost", sub: "Figures and video are frozen. Reconnecting automatically." }
+    : streams.length > 0 && live.online === 0 ? { tone: "bad" as const, title: "Safety monitoring is off", sub: `None of the ${streams.length} camera${streams.length === 1 ? "" : "s"} is delivering video, so nobody is being watched. Open System health, and tell the area supervisors to check by eye.` }
     : live.bad ? { tone: "bad" as const, title: `${live.bad} worker${live.bad === 1 ? "" : "s"} need${live.bad === 1 ? "s" : ""} attention now`, sub: `On ${names(live.unsafe)}. Walk over or tell the area supervisor, then confirm in Review.` }
     : live.problems.length ? { tone: "warn" as const, title: "Everyone in view is compliant", sub: `${live.problems.length} camera${live.problems.length === 1 ? " is" : "s are"} not delivering: ${names(live.problems)}.` }
     : { tone: "ok" as const, title: streams.length ? "All clear across the plant" : "No cameras yet", sub: streams.length ? `${live.workers} worker${live.workers === 1 ? "" : "s"} in view on ${live.online} live camera${live.online === 1 ? "" : "s"}, all compliant.` : "Add a camera in Setup to start monitoring." };
