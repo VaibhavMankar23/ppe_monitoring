@@ -1,3 +1,4 @@
+import { OutageBanner } from "../components/live/OutageBanner";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Page } from "../components/layout/Shell";
 import { fleetCounts, fleetState, FleetBoard, FleetLegend } from "../components/live/FleetBoard";
@@ -365,6 +366,7 @@ export function OverviewPage() {
         )}
       </>}>
       {error && <Notice tone="bad" title="Couldn't load the figures" className="mb-5">{error}</Notice>}
+      <OutageBanner streams={streams} className="mb-4" />
 
       {/* ---- 1. status: is anyone unsafe right now? ---- */}
       <Panel className={cx("mb-4 grid gap-0 overflow-hidden border-l-4 lg:h-[330px] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]",

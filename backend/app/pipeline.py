@@ -35,6 +35,7 @@ import numpy as np
 from .annotate import draw, evidence_image, person_crop, violation_snapshot
 from .config import AppConfig, InferenceConfig, ModelConfig, StreamConfig
 from .detector import Detector, build_detector
+from .hostinfo import sampler, server_info
 from .ppe_logic import (
     BEHAVIOR_CLASS, Box, ComplianceSmoother, Detection, PersonCompliance, PPE_ITEMS, Zone, ZONE_ITEMS, apply_zones, drop_group_boxes, mask_unmonitored, crop_region, detectable_items, disproved_items, evaluate_frame, match_person, unchecked,
     merge_refined, refine_person_box,
@@ -755,6 +756,7 @@ class InferenceEngine:
         span = min(self.STATS_WINDOW, max(1e-6, now - calls[0][0] + calls[0][1])) if calls else self.STATS_WINDOW
         return {
             "name": self.name, "device": getattr(self.detector, "device", ""),
+            "runtime": (getattr(self.detector, "info", None) or {}).get("runtime", ""),  # e.g. best_480_b32_fp16.engine
             "utilization": round(min(1.0, busy / self.STATS_WINDOW), 3),  # share of wall time spent in inference
             "calls_per_s": round(len(calls) / span, 2) if calls else 0.0,
             "frames_per_s": round(frames / span, 2) if calls else 0.0,
@@ -1149,27 +1151,13 @@ class Monitor:
             "violations_today": self.store.count_today(),
             "alerts_session": self.store.session_total,
             "focus": self.focus_state(),
+            "server": server_info(),
             "streams": [w.snapshot() for w in list(self.workers.values())],
         }
 
     def health(self) -> dict[str, Any]:
         """Capacity view for the admin: per-camera throughput / drops / reconnects, engine load, host load."""
-        try:
-            import psutil
-
-            # one Process object for the app's lifetime: cpu_percent() measures since the previous call,
-            # so a fresh object would always report 0.0
-            proc = self.__dict__.setdefault("_psutil_proc", psutil.Process())
-            host = {
-                "cpu_percent": psutil.cpu_percent(interval=None),  # since the previous call (all cores)
-                "process_cpu_percent": round(proc.cpu_percent(interval=None) / (psutil.cpu_count() or 1), 1),
-                "memory_percent": psutil.virtual_memory().percent,
-                "process_rss_mb": round(proc.memory_info().rss / 2**20),
-                "threads": proc.num_threads(),
-                "cpu_count": psutil.cpu_count(),
-            }
-        except Exception:  # psutil missing / restricted: the rest is still useful
-            host = {"threads": threading.active_count()}
+        host = sampler.host()  # steady figures for the whole app, ffmpeg processes included (hostinfo.py)
         engines = [e.stats() for e in self.engines]
         cams = []
         for w in list(self.workers.values()):
@@ -1182,7 +1170,8 @@ class Monitor:
         return {
             "uptime_s": round(time.time() - self._started_at),
             "device": self.device, "mode": self.cfg.inference.mode, "post_workers": self.post_workers,
-            "engines": engines, "host": host, "cameras": cams, "focus": self.focus_state(),
+            "engines": engines, "host": host, "gpus": sampler.gpus(), "server": server_info(),
+            "cameras": cams, "focus": self.focus_state(),
             "capacity": {
                 "engine_utilization": util,
                 "max_fps_per_stream": self.cfg.inference.max_fps_per_stream,

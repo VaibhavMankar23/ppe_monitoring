@@ -301,8 +301,10 @@ export function SystemPage() {
         <CapacityPlanner engines={health.engines} cameras={health.cameras.filter((c) => c.enabled).length}
           maxFps={health.capacity.max_fps_per_stream} />
 
+        <ServerPanel health={health} />
+
         <Panel>
-          <PanelHeader title="Host" hint="The machine running detection. Video decoding counts towards CPU." />
+          <PanelHeader title="Host" hint="The machine running detection. The figures for this app include the video decoders (ffmpeg) it starts." />
           <div className="grid grid-cols-2 gap-x-6 gap-y-5 p-4 sm:grid-cols-3 lg:grid-cols-4">
             <div className="min-w-0">
               <Stat label="CPU" value={pct(host.cpu_percent)} unit={host.cpu_percent == null ? undefined : "%"} tone={loadTone(host.cpu_percent, 80, 95)}
@@ -310,7 +312,8 @@ export function SystemPage() {
               {host.cpu_percent != null && <Sparkline values={hist.cpu} label="CPU" />}
             </div>
             <Stat label="This app, CPU" value={host.process_cpu_percent == null ? dash : host.process_cpu_percent.toFixed(1)}
-              unit={host.process_cpu_percent == null ? undefined : "%"} hint="Share of all cores" />
+              unit={host.process_cpu_percent == null ? undefined : "%"}
+              hint={host.process_count && host.process_count > 1 ? `Share of all cores, with ${host.process_count - 1} video decoder${host.process_count === 2 ? "" : "s"}` : "Share of all cores"} />
             <Stat label="Memory" value={pct(host.memory_percent)} unit={host.memory_percent == null ? undefined : "%"} tone={loadTone(host.memory_percent, 80, 92)}
               hint="Of the host's RAM" />
             <Stat label="This app, memory" value={host.process_rss_mb == null ? dash : fmtInt(host.process_rss_mb)} unit={host.process_rss_mb == null ? undefined : "MB"} />
@@ -397,5 +400,83 @@ export function SystemPage() {
         </Panel>
       </div>
     </Page>
+  );
+}
+
+
+/** Which deployment this is, how it is reached, what detection runs on, and the state of each GPU. */
+function ServerPanel({ health }: { health: SystemHealth }) {
+  const server = health.server;
+  const gpus = health.gpus ?? [];
+  const engine = health.engines[0];
+  const onCuda = health.device.startsWith("cuda");
+  const runtime = engine?.runtime ?? "";
+  const kind = !runtime ? null : runtime.endsWith(".engine") ? "TensorRT" : runtime.endsWith(".pt") ? "PyTorch" : runtime.includes("openvino") ? "OpenVINO" : runtime;
+  const plain = location.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+  const used = (g: { index: number }) => health.device === `cuda:${g.index}`;
+  const gpuTone = (g: { memory_used_mb: number | null; memory_total_mb: number | null }): Tone => {
+    const f = g.memory_used_mb != null && g.memory_total_mb ? g.memory_used_mb / g.memory_total_mb : 0;
+    return f >= 0.9 ? "bad" : f >= 0.8 ? "warn" : "ok";
+  };
+  const full = gpus.filter((g) => used(g) && gpuTone(g) !== "ok");
+
+  return (
+    <Panel>
+      <PanelHeader title="This server" hint="Which installation you are looking at, and what it runs on." />
+      <div className="grid grid-cols-2 gap-x-6 gap-y-5 p-4 sm:grid-cols-3 lg:grid-cols-4">
+        <Stat label="Name" value={server?.name ?? dash} hint="Set PPE_SERVER_NAME in .env" />
+        <Stat label="Version" value={server ? `v${server.version}` : dash} hint={server?.build ? `Build ${server.build}` : "Build not recorded"} />
+        <Stat label="Address" value={location.host} hint={location.protocol === "https:" ? "Encrypted (HTTPS)" : "Plain HTTP"} />
+        <Stat label="Detection runs on" value={kind ?? dash} hint={engine?.device ? `${engine.device}${runtime ? ` · ${runtime}` : ""}` : undefined} />
+      </div>
+      {(plain || (onCuda && kind === "PyTorch") || full.length > 0) && (
+        <div className="grid gap-2 border-t border-line p-4">
+          {onCuda && kind === "PyTorch" && (
+            <Notice tone="warn" title="Detection is running on PyTorch, not TensorRT">
+              It works, but is slower and uses more of the GPU. The TensorRT engines did not load or did not fit in GPU memory. Check the server log, free some GPU memory and restart.
+            </Notice>
+          )}
+          {full.map((g) => (
+            <Notice key={g.index} tone={gpuTone(g) === "bad" ? "bad" : "warn"} title={`GPU ${g.index} is ${gpuTone(g) === "bad" ? "almost full" : "getting full"}`}>
+              Detection runs on it and it is at {Math.round(((g.memory_used_mb ?? 0) / (g.memory_total_mb ?? 1)) * 100)}% of its memory. Another card has more room: set PPE_DEVICE to it in .env and restart.
+            </Notice>
+          ))}
+          {plain && (
+            <Notice tone="warn" title="This page is not encrypted">
+              Sign-in passwords and video cross the plant network as plain HTTP. Put the HTTPS proxy in front (deploy/docker-compose.https.yml) before anyone outside this room uses it.
+            </Notice>
+          )}
+        </div>
+      )}
+      {gpus.length > 0 && (
+        <div className="overflow-x-auto border-t border-line">
+          <table className="table min-w-[560px]">
+            <thead><tr><th scope="col">GPU</th><th scope="col">Memory</th><th scope="col" className="text-right!">Load</th><th scope="col" className="text-right!">Temp</th><th scope="col">Used by detection</th></tr></thead>
+            <tbody>
+              {gpus.map((g) => {
+                const pctUsed = g.memory_used_mb != null && g.memory_total_mb ? Math.round((g.memory_used_mb / g.memory_total_mb) * 100) : null;
+                const tone = gpuTone(g);
+                return (
+                  <tr key={g.index}>
+                    <td><span className="num text-ink-3">{g.index}</span> {g.name}</td>
+                    <td>
+                      <span className="flex items-center gap-2">
+                        <span className="h-1.5 w-28 overflow-hidden rounded-full bg-sunken" role="img" aria-label={pctUsed == null ? "Memory unknown" : `${pctUsed}% of memory used`}>
+                          <span className={cx("block h-full", tone === "bad" ? "bg-bad" : tone === "warn" ? "bg-warn" : "bg-ok")} style={{ width: `${pctUsed ?? 0}%` }} />
+                        </span>
+                        <span className="num text-xs text-ink-2">{g.memory_used_mb != null ? `${fmtInt(g.memory_used_mb)} / ${fmtInt(g.memory_total_mb ?? 0)} MB` : dash}</span>
+                      </span>
+                    </td>
+                    <td className="num text-right">{g.utilization_percent != null ? `${g.utilization_percent}%` : dash}</td>
+                    <td className="num text-right">{g.temperature_c != null ? `${g.temperature_c}°C` : dash}</td>
+                    <td>{used(g) ? <Tag tone="accent">In use</Tag> : <span className="text-xs text-ink-3">Not used</span>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
   );
 }

@@ -97,6 +97,14 @@ export function LoginPage() {
           </span>
         </label>
         <Button type="submit" variant="primary" loading={busy} disabled={locked} className="h-[46px] w-full text-[14.5px]">Sign in</Button>
+        <details className="text-[13px] text-ink-2">
+          <summary className="w-fit cursor-pointer font-medium text-accent-strong underline-offset-2 hover:underline">Forgot your password?</summary>
+          <p className="mt-2 text-ink-3">
+            Ask a Super Admin to reset it: Setup, People, choose your name, Reset password. You then sign in with the temporary
+            password and choose your own. If no Super Admin can sign in, the person who runs the server can recover access from
+            the server itself; the setup guide has the command.
+          </p>
+        </details>
       </form>
     </AuthFrame>
   );

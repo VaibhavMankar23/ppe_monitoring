@@ -63,3 +63,47 @@ export function explainProblem(stream: StreamInfo | undefined): Problem | null {
   if (stream.status !== "offline" && stream.status !== "error" && stream.status !== "no_source") return null;
   return explainMessage(stream.message);
 }
+
+/** Many cameras down at once is one problem, not many. */
+export interface Outage {
+  down: number;
+  total: number;
+  all: boolean;
+  /** how many of the down cameras give the same reason */
+  sameReason: number;
+  headline: string;
+  detail: string;
+  cause: Problem | null;
+}
+
+const DOWN: StreamInfo["status"][] = ["offline", "error", "no_source", "reconnecting"];
+
+/** `null` unless at least half of the cameras that should be running (and at least 3) are down. */
+export function systemicOutage(streams: StreamInfo[]): Outage | null {
+  const expected = streams.filter((s) => s.running);
+  const down = expected.filter((s) => DOWN.includes(s.status));
+  if (expected.length < 3 || down.length < Math.max(3, Math.ceil(expected.length / 2))) return null;
+
+  // group by reason; an unrecognised message is grouped with its numbers (addresses, ports, seconds) blanked out
+  const groups = new Map<string, { n: number; problem: Problem | null }>();
+  for (const s of down) {
+    const problem = explainMessage(s.message);
+    const key = problem?.title ?? (s.message || "no message").toLowerCase().replace(/\d+(\.\d+)*/g, "#");
+    const g = groups.get(key) ?? { n: 0, problem };
+    g.n += 1;
+    groups.set(key, g);
+  }
+  const top = [...groups.values()].sort((a, b) => b.n - a.n)[0];
+  const shared = top.n >= Math.ceil(down.length * 0.8);
+  const all = down.length === expected.length;
+  const cause = shared ? top.problem : null;
+  return {
+    down: down.length, total: expected.length, all, sameReason: top.n, cause,
+    headline: all ? `All ${expected.length} cameras are down` : `${down.length} of ${expected.length} cameras are down`,
+    detail: cause
+      ? `${top.n === down.length ? "All of them" : `${top.n} of them`} give the same reason: ${cause.title.charAt(0).toLowerCase()}${cause.title.slice(1)}. ${cause.fix}`
+      : shared
+        ? "They report the same fault, so look at what they share before checking cameras one by one: the server's network, the switch or recorder, the camera sign-in, or the server itself."
+        : "They stopped together for different reasons. That points to something they share, such as the server's network or the switch, rather than 3 or more broken cameras. Check that first.",
+  };
+}

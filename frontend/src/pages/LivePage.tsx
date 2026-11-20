@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { CameraDrawer } from "../components/live/CameraDrawer";
 import { CameraTile } from "../components/live/CameraTile";
 import { FleetBoard, FleetLegend } from "../components/live/FleetBoard";
+import { OutageBanner } from "../components/live/OutageBanner";
 import { Page } from "../components/layout/Shell";
 import { Button, cx, Empty, Icon, Notice, Panel, Segmented, Switch } from "../components/ui";
 import { hashParams, navigateWith } from "../lib/router";
@@ -133,6 +134,7 @@ export function LivePage() {
       {!connected && info && (
         <Notice tone="bad" title="Connection to the server lost" className="mb-4">Figures and video are frozen. Reconnecting automatically.</Notice>
       )}
+      <OutageBanner streams={streams} className="mb-4" />
 
       {streams.length === 0 ? (
         <Panel>

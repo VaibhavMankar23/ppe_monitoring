@@ -69,8 +69,26 @@ export interface FocusState {
   paused: string[];
 }
 
+/** Which deployment this is: shown in the footer and on System health. */
+export interface ServerInfo {
+  name: string;
+  version: string;
+  /** short commit the image was built from; null when the build did not record it */
+  build: string | null;
+}
+
+export interface GpuInfo {
+  index: number;
+  name: string;
+  memory_used_mb: number | null;
+  memory_total_mb: number | null;
+  utilization_percent: number | null;
+  temperature_c: number | null;
+}
+
 export interface MonitorSnapshot {
   device: string;
+  server?: ServerInfo;
   imgsz: number;
   mode: string;
   model_classes: string[];
@@ -388,6 +406,8 @@ export interface ServerFiles {
 export interface EngineStats {
   name: string;
   device: string;
+  /** the model file in use, e.g. best_480_b32_fp16.engine (TensorRT) or best.pt (PyTorch) */
+  runtime?: string;
   utilization: number;
   calls_per_s: number;
   frames_per_s: number;
@@ -437,7 +457,9 @@ export interface SystemHealth {
   mode: string;
   post_workers: number;
   engines: EngineStats[];
-  host: { cpu_percent?: number; process_cpu_percent?: number; memory_percent?: number; process_rss_mb?: number; threads?: number; cpu_count?: number };
+  host: { cpu_percent?: number; process_cpu_percent?: number; memory_percent?: number; process_rss_mb?: number; process_count?: number; threads?: number; cpu_count?: number };
+  gpus?: GpuInfo[];
+  server?: ServerInfo;
   cameras: CameraHealth[];
   focus: FocusState;
   capacity: { engine_utilization: number; state: "ok" | "busy" | "saturated"; max_fps_per_stream?: number };

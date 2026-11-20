@@ -349,6 +349,7 @@ function LiveChip() {
 
 function Sidebar({ route, open, onClose }: { route: Page; open: boolean; onClose: () => void }) {
   const { can, user } = useAuth();
+  const server = useMonitor().info?.server;
   const count = useOpenIncidents(can("violations:view"));
   const groups = GROUPS.map((g) => ({ ...g, routes: g.routes.filter((r) => can(ROUTE_PERMISSION[r.route])) })).filter((g) => g.routes.length);
   return (
@@ -389,6 +390,12 @@ function Sidebar({ route, open, onClose }: { route: Page; open: boolean; onClose
         {user && (
           <div className="mt-auto border-t border-line px-2 pt-3 text-xs text-ink-3">
             Signed in as <b className="font-semibold text-ink">{user.username}</b><br />{user.role_label}
+            {server && (
+              <div className="mt-2 border-t border-line pt-2" title="The server this page is connected to">
+                <span className="num font-semibold text-ink-2">{server.name}</span>
+                <br />v{server.version}{server.build ? ` · ${server.build}` : ""}
+              </div>
+            )}
           </div>
         )}
       </aside>

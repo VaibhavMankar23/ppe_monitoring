@@ -46,6 +46,10 @@ COPY --from=frontend /frontend/dist /app/frontend/dist
 RUN groupadd -g ${APP_GID} ppe && useradd -u ${APP_UID} -g ${APP_GID} -M -d /app -s /usr/sbin/nologin ppe \
  && mkdir -p /app/config /app/data /app/videos /app/models /app/logs /tmp/ultralytics \
  && chown -R ppe:ppe /app/config /app/data /app/logs /app/videos /app/models /tmp/ultralytics
+# which commit this image was built from, shown on System health and in the footer
+# (docker compose build passes it; unset = "unknown")
+ARG GIT_COMMIT=unknown
+ENV PPE_GIT_COMMIT=${GIT_COMMIT}
 USER ppe
 
 EXPOSE 8000

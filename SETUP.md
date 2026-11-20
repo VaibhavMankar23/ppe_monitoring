@@ -329,6 +329,7 @@ delete `models/safesight/*.engine` and `models/safesight/*_openvino_model/`, the
 | Super Admin locked out (no data lost) | `docker compose exec ppe-monitor python -m app.reset_password --generate` (add `--user NAME` for another user) |
 | Logs on disk | `logs/ppe-monitor.log` (rotated, survives `docker compose down`) |
 | Who changed what | Setup > Audit trail |
+| Update to the latest code | `git pull && sudo GIT_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build`, then Ctrl+Shift+R in the browser. The footer shows the build |
 | Restart | `docker compose restart ppe-monitor` |
 | Stop / start everything | `docker compose down` / `docker compose up -d` |
 | Logs | `docker compose logs --tail 200 ppe-monitor` |

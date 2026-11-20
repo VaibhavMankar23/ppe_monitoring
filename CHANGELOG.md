@@ -6,6 +6,19 @@ All notable changes to the PPE Compliance Monitor. Dates are IST.
 
 Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and acceptance testing.
 
+### Trust and deployment (Nov 2026)
+- **Fixed:** System health showed 0 % host CPU and counted only the Python process. rtsps:// cameras are decoded by
+  separate ffmpeg processes, so "This app" CPU and memory were about a third and a half of the real figures. One
+  background sampler now measures the whole process tree every 2 s, so every browser sees the same steady numbers.
+- **Added:** many cameras down at once now show one banner on Live and Command ("All 34 cameras are down") with the
+  shared cause and what to do, instead of 34 identical tiles that each explain themselves on hover.
+- **Added:** "This server" panel on System health: installation name, version, build (commit), address, whether the
+  page is encrypted, what detection runs on (TensorRT, PyTorch, OpenVINO) and the memory, load and temperature of
+  every GPU, with warnings for a full GPU, a PyTorch fallback and plain HTTP. The name and build are also in the
+  sidebar footer. Set `PPE_SERVER_NAME` in `.env`; the update command in SETUP.md records the build.
+- **Added:** "Forgot your password?" on the sign-in page says who can reset it and where.
+- **Changed:** Live, Command and Act now never say "nobody unsafe" when no camera is delivering video.
+
 ### Add camera (Nov 2026)
 - **Added:** adding a camera now shows what happened next. After Save the drawer stays open and says whether the
   camera connected (resolution and frame rate) or why not, with a "Fix the source" button.
