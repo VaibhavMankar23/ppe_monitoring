@@ -4,7 +4,8 @@ import { api, jpegDataUrl } from "../../lib/api";
 import { fieldMeta } from "../../lib/configForm";
 import type { ConfigSchema, RawConfig, ServerFiles, SourceTestResult } from "../../types";
 import { errorMessage, fmtBytes } from "../settings/shared";
-import { Button, Field, Input, Notice, Select, Spinner, Switch } from "../ui";
+import { explainMessage } from "./status";
+import { Button, cx, Field, Icon, Input, Notice, Select, Spinner, Switch, type IconName } from "../ui";
 
 /** What the server sends in place of a stored (encrypted) camera password. Sent back, it means "unchanged". */
 export const PASSWORD_MASK = "********";
@@ -17,6 +18,18 @@ const TYPE_LABEL: Record<string, string> = {
   webcam: "USB webcam on the server",
   onvif: "ONVIF (not supported yet)",
 };
+
+/** What each source type is, in the words of the person adding the camera. */
+const TYPE_CARD: Record<string, { title: string; help: string; icon: IconName }> = {
+  rtsp: { title: "IP camera (RTSP)", help: "Most CCTV and NVR cameras. rtsps:// works too.", icon: "camera" },
+  http: { title: "IP camera (HTTP)", help: "MJPEG stream, JPEG snapshot or HLS.", icon: "external" },
+  file: { title: "Video file", help: "A recording on the server, played in a loop.", icon: "play" },
+  webcam: { title: "USB webcam", help: "Plugged into the server itself.", icon: "monitor" },
+  images: { title: "Image folder", help: "Pictures on the server, shown in order.", icon: "dataset" },
+};
+const CARD_ORDER = ["rtsp", "http", "file", "webcam", "images"]; // most used first
+const mbText = (mb: number) => (mb >= 1024 ? `${Math.round((mb / 1024) * 10) / 10} GB` : `${mb} MB`);
+const lastSegment = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 
 const isNetwork = (t: string) => t === "rtsp" || t === "http";
 
@@ -47,9 +60,11 @@ interface Props {
   errors: Record<string, string>;
   /** adding a camera: only what is needed to connect (timeouts, playback rate, loop... keep their defaults) */
   essential?: boolean;
+  /** the connection test for the current source finished ("ok" / "failed"), or the source changed since (null) */
+  onTested?: (outcome: "ok" | "failed" | null, message?: string) => void;
 }
 
-export function SourceForm({ source, onChange, hasStoredPassword, streamId, disabled, canUpload, schema, errors, essential = false }: Props) {
+export function SourceForm({ source, onChange, hasStoredPassword, streamId, disabled, canUpload, schema, errors, essential = false, onTested }: Props) {
   const type: string = source.type ?? "file";
   const uri: string = source.uri ?? "";
   const types = schema.source_types.includes(type) ? schema.source_types : [type, ...schema.source_types];
@@ -114,6 +129,11 @@ export function SourceForm({ source, onChange, hasStoredPassword, streamId, disa
     setTesting(false);
   };
   const result = test?.key === key ? test.result : null;
+  const outcome = result ? (result.ok ? "ok" : "failed") : null;
+  const failure = result && !result.ok ? result.message : undefined;
+  const reportTested = useRef(onTested);
+  reportTested.current = onTested;
+  useEffect(() => { reportTested.current?.(outcome, failure); }, [outcome, failure]);
 
   // ---------------------------------------------------------------- password
   const password: string = source.password ?? "";
@@ -126,9 +146,23 @@ export function SourceForm({ source, onChange, hasStoredPassword, streamId, disa
     <div className="flex flex-col gap-4">
       <Field label="Source type" hint="Changing the type clears the address below." error={errors.type}>
         {(id) => (
-          <Select id={id} value={type} disabled={disabled} onChange={(e) => setType(e.target.value)} className="sm:max-w-xs">
-            {types.filter((t) => !essential || t !== "onvif").map((t) => <option key={t} value={t}>{TYPE_LABEL[t] ?? t}</option>)}
-          </Select>
+          <div id={id} role="radiogroup" aria-label="Source type" className="grid gap-2 sm:grid-cols-2">
+            {[...types].filter((t) => t !== "onvif" || type === "onvif").sort((x, y) => (CARD_ORDER.indexOf(x) + 99) % 99 - (CARD_ORDER.indexOf(y) + 99) % 99).map((t) => {
+              const c = TYPE_CARD[t] ?? { title: TYPE_LABEL[t] ?? t, help: "", icon: "camera" as IconName };
+              const on = t === type;
+              return (
+                <button key={t} type="button" role="radio" aria-checked={on} disabled={disabled} onClick={() => !on && setType(t)}
+                  className={cx("flex min-h-[64px] items-start gap-3 rounded-lg border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                    on ? "border-accent bg-accent-soft ring-1 ring-accent" : "border-line-strong bg-surface hover:bg-sunken")}>
+                  <span className={cx("grid size-8 shrink-0 place-items-center rounded-md", on ? "bg-accent text-accent-ink" : "bg-sunken text-ink-2")}><Icon name={c.icon} size={16} /></span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold text-ink">{c.title}</span>
+                    {c.help && <span className="block text-[12.5px] text-ink-3">{c.help}</span>}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         )}
       </Field>
 
@@ -136,7 +170,7 @@ export function SourceForm({ source, onChange, hasStoredPassword, streamId, disa
         <>
           <Field label={type === "rtsp" ? "RTSP URL" : "Stream or snapshot URL"} error={errors.uri}
             hint={type === "rtsp"
-              ? "Without the password: put it in the field below, where it is stored encrypted."
+              ? "Without the password: put it in the fields below, where it is stored encrypted. rtsps:// is supported."
               : "An MJPEG stream, a JPEG snapshot URL (polled), or HLS / MP4 over HTTP. Leave the password out of the URL."}>
             {(id) => <Input id={id} className="num" value={uri} disabled={disabled} invalid={!!errors.uri} spellCheck={false} autoComplete="off"
               placeholder={type === "rtsp" ? "rtsp://192.168.1.64:554/Streaming/Channels/101" : "http://192.168.1.70/video.mjpg"}
@@ -187,7 +221,7 @@ export function SourceForm({ source, onChange, hasStoredPassword, streamId, disa
         <>
           <Field label={type === "images" ? "Image folder" : "Video file"} error={errors.uri}
             hint={filesError ? undefined : files
-              ? <>Listed from <span className="num break-all">{files.dir}</span> on the server.</>
+              ? <>Listed from the server's <span className="num">{lastSegment(files.dir)}</span> folder.</>
               : disabled ? undefined : "Loading the server's video folder."}>
             {(id) => (
               <Select id={id} value={uri} disabled={disabled} invalid={!!errors.uri} onChange={(e) => set("uri", e.target.value)}>
@@ -217,7 +251,7 @@ export function SourceForm({ source, onChange, hasStoredPassword, streamId, disa
                   <Button size="sm" icon="upload" disabled={disabled || !canUpload} onClick={() => fileInput.current?.click()}>Upload video</Button>
                   <span className="min-w-0 flex-1 text-xs text-ink-3">
                     {canUpload
-                      ? <>Send a recording from this computer. It plays in a loop like a live camera.{files ? ` Up to ${files.max_upload_mb} MB.` : ""}</>
+                      ? <>Send a recording from this computer. It plays in a loop like a live camera.{files ? ` Up to ${mbText(files.max_upload_mb)}.` : ""}</>
                       : "Uploading a video needs a Super Admin. You can pick one already on the server."}
                   </span>
                 </div>
@@ -249,11 +283,12 @@ export function SourceForm({ source, onChange, hasStoredPassword, streamId, disa
       {type === "onvif" && <Notice tone="warn">ONVIF discovery is not supported yet. Use the camera's RTSP URL with the RTSP type.</Notice>}
 
       <div className="border-t border-line pt-4">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <Button icon="pulse" loading={testing} disabled={disabled || !uri.trim() || !!upload} onClick={() => void runTest()}>Test connection</Button>
-          <span className="min-w-0 flex-1 text-xs text-ink-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+          <Button icon="pulse" loading={testing} disabled={disabled || !uri.trim() || !!upload} onClick={() => void runTest()} className="max-sm:w-full">Test connection</Button>
+          <span className="min-w-0 flex-1 text-[12.5px] text-ink-3">
             {testing
               ? "Opening the source from the server and waiting for a picture. A network camera can take up to 20 seconds."
+              : !uri.trim() ? "Enter the address first, then test it before saving."
               : "Opens the source from the server itself, which is what matters: address, sign-in and video format are all checked."}
           </span>
         </div>
@@ -274,7 +309,15 @@ export function SourceForm({ source, onChange, hasStoredPassword, streamId, disa
           </div>
         ) : (
           <Notice tone="bad" className="mt-3" title="No video from this source">
-            <span className="break-words">{result.message || "The server could not open it."}</span>
+            {(() => {
+              const why = explainMessage(result.message);
+              return (
+                <>
+                  {why && <p className="font-medium text-ink">{why.title}. <span className="font-normal">{why.fix}</span></p>}
+                  <p className={cx("break-words", why && "mt-1 text-xs text-ink-3")}>{result.message || "The server could not open it."}</p>
+                </>
+              );
+            })()}
           </Notice>
         ))}
       </div>

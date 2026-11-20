@@ -5,11 +5,12 @@ import { isChecked, phoneProblem } from "../../lib/capabilities";
 import { clone, fieldMeta, sameJson } from "../../lib/configForm";
 import { ppeLabel } from "../../lib/format";
 import { useAuth } from "../../state/auth";
+import { useMonitor } from "../../state/monitor";
 import type { ConfigDoc, ConfigSchema, FieldError, Priority, RawConfig, StreamInfo, Zone } from "../../types";
 import { errorMessage, fieldErrors, isConflict, toastSaved } from "../settings/shared";
-import { Button, Chip, ConfirmDialog, cx, Drawer, Field, Icon, Input, Notice, Segmented, StatusDot, Switch, Tag, useToast } from "../ui";
+import { Button, Chip, ConfirmDialog, cx, Drawer, Field, Icon, Input, Notice, Segmented, Spinner, StatusDot, Switch, Tag, useToast } from "../ui";
 import { PASSWORD_MASK, SourceForm } from "./SourceForm";
-import { streamStatus } from "./status";
+import { explainProblem, streamStatus } from "./status";
 import { ZoneEditor, zoneProblems } from "./ZoneEditor";
 
 export type CameraTab = "rules" | "source" | "zones";
@@ -38,6 +39,17 @@ function deriveId(name: string, taken: string[]): string {
   return id;
 }
 
+/** A new camera that starts like an existing one: same kind of source, user name, PPE rules and priority.
+ * Not the name, the zones (they belong to one picture) or the password: a saved password is only ever reused
+ * for the camera it was saved with, so it is typed again. */
+export function copyOf(c: RawConfig): RawConfig {
+  const source: RawConfig = { ...(c.source ?? {}) };
+  delete source.password;
+  const out: RawConfig = { id: "", name: "", enabled: true, required_ppe: [...(c.required_ppe ?? [])], source };
+  for (const k of ["priority", "confidence", "detect_phone"]) if (k in c) out[k] = c[k];
+  return out;
+}
+
 const without = (o: RawConfig, key: string): RawConfig => {
   const next = { ...o };
   delete next[key];
@@ -53,16 +65,23 @@ interface Props {
   /** live state of the camera, when it is known to the monitor */
   stream?: StreamInfo;
   onClose: () => void;
+  /** a new camera to start from (Duplicate, Add another like this) */
+  template?: RawConfig;
   /** the document after a successful save */
   onSaved: (r: SaveResult) => void;
+  /** open a blank new camera that starts like this one */
+  onDuplicate: (from: RawConfig) => void;
+  /** open a camera (after adding one that does not connect, to fix its source) */
+  onEditCamera: (id: string, tab?: CameraTab) => void;
   /** fetch the latest document (after a conflict); the edits in the drawer are kept */
   onReload: () => Promise<void>;
   onDirty: (dirty: boolean) => void;
 }
 
-export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, onClose, onSaved, onReload, onDirty }: Props) {
+export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, template, onClose, onSaved, onDuplicate, onEditCamera, onReload, onDirty }: Props) {
   const toast = useToast();
   const { can } = useAuth();
+  const { streams: liveStreams } = useMonitor();
   const canCameras = can("config:cameras");
   const canSystem = can("config:system");
   const isNew = cameraId === null;
@@ -72,7 +91,7 @@ export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, onClos
   const blank = useMemo<RawConfig>(() => ({ id: "", name: "", source: { type: "rtsp", uri: "" }, required_ppe: ["helmet", "vest"], enabled: true }), []);
   const base = isNew ? blank : saved;
 
-  const [draft, setDraft] = useState<RawConfig>(() => clone(base ?? blank));
+  const [draft, setDraft] = useState<RawConfig>(() => clone(isNew && template ? template : base ?? blank));
   const [tab, setTab] = useState<CameraTab>(initialTab ?? (isNew ? "source" : "rules"));
   const [idEdited, setIdEdited] = useState(false);
   const [errors, setErrors] = useState<FieldError[]>([]); // loc relative to this camera: "name", "source.uri", "zones.0.name"
@@ -81,14 +100,20 @@ export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, onClos
   const [conflict, setConflict] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  /** how the connection test of the source in the form went; null = not tested since the source last changed */
+  const [tested, setTested] = useState<{ ok: boolean; message?: string } | null>(null);
+  const [confirmAdd, setConfirmAdd] = useState(false);
+  /** a new camera that was just saved: the drawer then shows whether it connected */
+  const [added, setAdded] = useState<{ id: string; name: string; camera: RawConfig } | null>(null);
+  const onTested = useCallback((outcome: "ok" | "failed" | null, message?: string) => setTested(outcome === null ? null : { ok: outcome === "ok", message }), []);
 
-  const dirty = !!base && !sameJson(draft, base);
+  const dirty = !added && !!base && !sameJson(draft, base);
   useEffect(() => { onDirty(dirty); }, [dirty, onDirty]);
   useEffect(() => () => onDirty(false), [onDirty]);
 
   // Drawer and dialogs re-attach their key handling whenever onClose changes, so these stay stable.
-  const state = useRef({ dirty, saving, nested: confirmClose || confirmRemove });
-  state.current = { dirty, saving, nested: confirmClose || confirmRemove };
+  const state = useRef({ dirty, saving, nested: confirmClose || confirmRemove || confirmAdd });
+  state.current = { dirty, saving, nested: confirmClose || confirmRemove || confirmAdd };
   const requestClose = useCallback(() => {
     const s = state.current;
     if (s.nested || s.saving) return;
@@ -172,10 +197,14 @@ export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, onClos
     } else toast({ tone: "error", title: what, message: errorMessage(e) });
   };
 
-  const save = async () => {
+  const save = async (force = false) => {
     const found = check();
     if (found.length) {
       fail(found);
+      return;
+    }
+    if (isNew && !force && tested?.ok === false) {  // the test said no: ask once, do not block (the camera may be off for now)
+      setConfirmAdd(true);
       return;
     }
     const camera = { ...draft, name: String(draft.name).trim(), source: { ...draft.source, uri: String(draft.source.uri).trim() } };
@@ -189,7 +218,8 @@ export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, onClos
       toastSaved(toast, r, isNew ? `Camera “${camera.name}” added` : `Camera “${camera.name}” saved`);
       onDirty(false);
       onSaved(r);
-      onClose();
+      if (isNew) setAdded({ id: String(draft.id), name: camera.name, camera: camera as RawConfig });  // stay: show whether it connected
+      else onClose();
     } catch (e) {
       handleError(e, "The camera could not be saved");
     } finally {
@@ -234,30 +264,51 @@ export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, onClos
     .filter((e) => !/^zones\.\d+\.name$/.test(e.loc) || !zoneProblems(zones).some(Boolean))
     .map((e) => ({ ...e, loc: e.loc.slice(6) })), [errors, zones]);
   const gone = !isNew && !saved;
+  const problem = !isNew ? explainProblem(stream) : null;
+  const rawProblem = !isNew && !problem && stream?.running && ["offline", "error", "no_source"].includes(stream.status) ? stream.message : "";
 
   return (
     <>
       <Drawer open onClose={requestClose} width={880}
-        title={isNew ? (draft.name ? `New camera: ${draft.name}` : "New camera") : draft.name || cameraId}
-        subtitle={isNew ? "It starts as soon as it is saved." : (
+        title={added ? `Camera added: ${added.name}` : isNew ? (draft.name ? `New camera: ${draft.name}` : "New camera") : draft.name || cameraId}
+        subtitle={added ? <span className="num">{added.id}</span> : isNew ? "It starts as soon as it is saved." : (
           <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
             <span className="num">{cameraId}</span>
             <span className="flex items-center gap-1.5" title={stream?.message || undefined}><StatusDot tone={status.tone} pulse={status.tone === "ok"} />{status.label}</span>
           </span>
         )}
-        footer={gone ? <Button variant="primary" onClick={onClose}>Close</Button> : (
+        footer={added ? (
+          <>
+            <Button variant="ghost" onClick={() => onEditCamera(added.id)}>Edit this camera</Button>
+            <Button icon="plus" onClick={() => onDuplicate(added.camera)}>Add another like this</Button>
+            <Button variant="primary" icon="check" onClick={onClose}>Done</Button>
+          </>
+        ) : gone ? <Button variant="primary" onClick={onClose}>Close</Button> : (
           <>
             <div className="mr-auto flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
               {!isNew && canSystem && (
                 <Button variant="ghost" icon="trash" className="text-bad! hover:bg-bad-soft!" disabled={saving} onClick={() => setConfirmRemove(true)}>Remove camera</Button>
               )}
-              <span className="text-xs text-ink-3">{isNew ? "Saving adds the camera and starts it." : "Saving restarts this camera. The others keep running."}</span>
+              {!isNew && canSystem && (
+                <Button variant="ghost" icon="plus" disabled={saving || dirty} title={dirty ? "Save or discard your changes first" : "Start a new camera from this one's settings"}
+                  onClick={() => saved && onDuplicate(saved)}>Duplicate</Button>
+              )}
+              <span className={cx("text-xs", isNew && tested?.ok === false ? "text-bad" : "text-ink-3")}>
+                {!isNew ? "Saving restarts this camera. The others keep running."
+                  : tested === null ? "Not tested yet. Saving adds the camera and starts it."
+                    : tested.ok ? "Connection tested. Saving adds the camera and starts it."
+                      : "The last connection test failed."}
+              </span>
             </div>
             <Button variant="ghost" disabled={saving} onClick={requestClose}>{dirty ? "Discard" : "Close"}</Button>
-            <Button variant="primary" icon="check" loading={saving} disabled={!anyEditable || !dirty || conflict} onClick={() => void save()}>Save camera</Button>
+            <Button variant="primary" icon="check" loading={saving} disabled={!anyEditable || !dirty || conflict} onClick={() => void save()}>{isNew ? "Add camera" : "Save camera"}</Button>
           </>
         )}>
-        {gone ? (
+        {added ? (
+          <div className="p-4">
+            <AddedResult stream={liveStreams.find((x) => x.id === added.id)} onFix={() => onEditCamera(added.id, "source")} />
+          </div>
+        ) : gone ? (
           <div className="p-4"><Notice tone="warn" title="This camera is no longer in the configuration">Someone removed it while this editor was open. Your changes to it cannot be saved.</Notice></div>
         ) : (
           <div className="flex flex-col gap-4 p-4">
@@ -273,6 +324,17 @@ export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, onClos
             {!canCameras ? <Notice tone="warn">Your role can look at cameras but not change them.</Notice>
               : !canSystem && isNew ? <Notice tone="warn">Adding a camera needs a Super Admin.</Notice>
                 : !canSystem && <Notice>Your role can change this camera's name, source, rules and zones. Removing it, and phone-use detection, need a Super Admin.</Notice>}
+
+            {isNew && template && (
+              <Notice>Started from another camera: same kind of source, user name, PPE rules and priority. Change the name and the address. Enter the password again: a saved password is only reused for the camera it was saved with.</Notice>
+            )}
+            {problem && (
+              <Notice tone="bad" title={problem.title}
+                action={problem.tab && tab !== problem.tab ? <Button size="sm" onClick={() => setTab(problem.tab!)}>Open {TAB_LABEL[problem.tab]}</Button> : undefined}>
+                {problem.fix}
+              </Notice>
+            )}
+            {rawProblem && <Notice tone="bad" title="Not working right now"><span className="break-words">{rawProblem}</span></Notice>}
 
             {conflict && (
               <Notice tone="bad" title="Someone else saved the configuration while you were editing"
@@ -313,7 +375,7 @@ export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, onClos
                   <div>
                     <div className="mb-2 text-[13px] font-semibold">Video source</div>
                     <SourceForm essential source={draft.source ?? {}} onChange={(s) => { set("source", s); setErrors((es) => es.filter((e) => !e.loc.startsWith("source"))); }}
-                      hasStoredPassword={false} disabled={!editable("source")} canUpload={canSystem} schema={schema} errors={sourceErrors} />
+                      hasStoredPassword={false} disabled={!editable("source")} canUpload={canSystem} schema={schema} errors={sourceErrors} onTested={onTested} />
                   </div>
                 )}
 
@@ -414,11 +476,52 @@ export function CameraDrawer({ doc, schema, cameraId, initialTab, stream, onClos
         title="Discard changes to this camera?" confirmLabel="Discard changes">
         {isNew ? "The new camera is not added." : "The camera keeps the settings it had when you opened it."}
       </ConfirmDialog>
+      <ConfirmDialog open={confirmAdd} onClose={() => setConfirmAdd(false)} onConfirm={() => { setConfirmAdd(false); void save(true); }}
+        title="The connection test failed" confirmLabel="Add anyway">
+        {tested?.message ? <span className="break-words">{tested.message} </span> : null}
+        The camera will be added, but it will show as offline until the address, port or sign-in is fixed. Add it anyway?
+      </ConfirmDialog>
       <ConfirmDialog open={confirmRemove} onClose={closeConfirmRemove} onConfirm={() => void remove()} danger busy={saving}
         title={`Remove ${saved?.name ?? "this camera"}?`} confirmLabel="Remove camera">
         The camera stops now and leaves the configuration, with its rules and zones. Violations it already recorded are kept.
         {dirty && " Your unsaved changes to it are dropped."}
       </ConfirmDialog>
     </>
+  );
+}
+
+
+/** What the person who just added a camera needs to see: did it connect, and if not, why and what to do. */
+function AddedResult({ stream, onFix }: { stream: StreamInfo | undefined; onFix: () => void }) {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const t = window.setTimeout(() => setSlow(true), 20_000);
+    return () => window.clearTimeout(t);
+  }, []);
+  const problem = explainProblem(stream);
+  const failed = !!stream && ["offline", "error", "no_source"].includes(stream.status);
+
+  if (stream?.status === "live") {
+    return (
+      <Notice tone="ok" title="Connected and watching">
+        {stream.frame_size ? `${stream.frame_size[0]} × ${stream.frame_size[1]}` : "Video is arriving"}
+        {stream.source_fps ? `, ${Math.round(stream.source_fps * 10) / 10} fps from the camera` : ""}. It appears on the Live page now. Draw zones from its Zones tab if only part of the picture matters.
+      </Notice>
+    );
+  }
+  if (failed) {
+    return (
+      <Notice tone="bad" title={problem?.title ?? "The camera was added, but it is not connecting"}
+        action={<Button size="sm" onClick={onFix}>Fix the source</Button>}>
+        {problem && <p>{problem.fix}</p>}
+        {stream?.message && <p className={cx("break-words", problem && "mt-1 text-xs text-ink-3")}>{stream.message}</p>}
+      </Notice>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2 text-[13.5px] text-ink-2" role="status"><Spinner size={16} /> {stream ? "Connecting to the camera…" : "Starting the camera…"}</div>
+      {slow && <Notice tone="warn">This is taking longer than usual. A network camera can need up to 20 seconds. If it stays here, use Edit this camera and test the connection.</Notice>}
+    </div>
   );
 }

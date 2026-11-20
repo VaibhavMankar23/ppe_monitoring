@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CameraDrawer, type CameraTab } from "../components/cameras/CameraDrawer";
+import { CameraDrawer, copyOf, type CameraTab } from "../components/cameras/CameraDrawer";
 import { sourceSummary } from "../components/cameras/SourceForm";
 import { streamStatus } from "../components/cameras/status";
 import { Page } from "../components/layout/Shell";
@@ -19,7 +19,7 @@ const SOURCE_TYPE: Record<string, string> = { rtsp: "RTSP", http: "HTTP", file: 
 const PRIORITY: Record<string, string> = { high: "High", normal: "Normal", low: "Low" };
 
 /** `open`: a camera id, or null for a new camera. */
-type Editing = { id: string | null; tab?: CameraTab; key: number };
+type Editing = { id: string | null; tab?: CameraTab; key: number; template?: RawConfig };
 
 export function CamerasPage() {
   const toast = useToast();
@@ -49,7 +49,8 @@ export function CamerasPage() {
   }, []);
   useEffect(load, [load]);
 
-  const open = useCallback((id: string | null, tab?: CameraTab) => setEditing({ id, tab, key: nextKey.current++ }), []);
+  const open = useCallback((id: string | null, tab?: CameraTab, template?: RawConfig) => setEditing({ id, tab, template, key: nextKey.current++ }), []);
+  const openLike = useCallback((from: RawConfig) => open(null, undefined, copyOf(from)), [open]);
   const close = useCallback(() => setEditing(null), []);
 
   // deep link from other pages: #/cameras?camera=gate-1&tab=zones, #/cameras?add=1
@@ -227,8 +228,9 @@ export function CamerasPage() {
       </div>
 
       {editing && doc && schema && (
-        <CameraDrawer key={editing.key} doc={doc} schema={schema} cameraId={editing.id} initialTab={editing.tab}
+        <CameraDrawer key={editing.key} doc={doc} schema={schema} cameraId={editing.id} initialTab={editing.tab} template={editing.template}
           stream={editing.id ? live.get(editing.id) : undefined}
+          onDuplicate={openLike} onEditCamera={(id, tab) => open(id, tab)}
           onClose={close} onSaved={onSaved} onReload={reload} onDirty={setDrawerDirty} />
       )}
     </Page>

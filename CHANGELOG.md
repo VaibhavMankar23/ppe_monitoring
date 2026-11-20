@@ -6,6 +6,19 @@ All notable changes to the PPE Compliance Monitor. Dates are IST.
 
 Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and acceptance testing.
 
+### Add camera (Nov 2026)
+- **Added:** adding a camera now shows what happened next. After Save the drawer stays open and says whether the
+  camera connected (resolution and frame rate) or why not, with a "Fix the source" button.
+- **Added:** a failed connection test asks before the camera is added ("Add anyway"); an untested camera is
+  flagged next to the button. Saving is never blocked: a camera may be switched off for now.
+- **Added:** plain-language causes and fixes for connection problems, in the test result, the camera editor and
+  after adding. The "stored camera password can't be decrypted" case now names `PPE_SECRET_KEY`.
+- **Added:** Duplicate (camera editor) and "Add another like this" (after adding) start a new camera with the same
+  kind of source, user name, PPE rules and priority. The password is typed again on purpose: a saved password is
+  only reused for the camera it was saved with.
+- **Changed:** the source type is chosen from cards with a one-line description instead of a drop-down.
+- **Not yet:** adding many cameras at once from a list of addresses.
+
 ### GPU servers (Nov 2026)
 - **Fixed (high):** on a GPU server with too little free memory the app crashed at start and Docker restarted
   it in a loop (`OutOfMemory` while loading the TensorRT engines). It now logs a clear error and runs the same
