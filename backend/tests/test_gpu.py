@@ -159,3 +159,23 @@ def test_single_gpu_stays_on_cuda_0(monkeypatch):
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     assert D.pick_cuda_device("auto") == "cuda:0"
     D._auto_cuda = None
+
+
+# ------------------------------------------------------------------ multi-GPU: the worker thread must use the model's GPU
+def test_inference_thread_is_pointed_at_the_models_gpu(monkeypatch):
+    import types
+
+    calls = []
+    fake_cuda = types.SimpleNamespace(is_available=lambda: True, current_device=lambda: 0,
+                                      set_device=lambda i: calls.append(i))
+    monkeypatch.setitem(__import__("sys").modules, "torch", types.SimpleNamespace(cuda=fake_cuda))
+    det = D.YoloDetector.__new__(D.YoloDetector)
+    det.is_cuda, det.device = True, "cuda:1"
+    det._use_cuda_device()
+    assert calls == [1]
+    det.device = "cuda:0"  # already current: no call
+    det._use_cuda_device()
+    assert calls == [1]
+    det.is_cuda, det.device = False, "cpu"
+    det._use_cuda_device()
+    assert calls == [1]

@@ -246,6 +246,21 @@ class YoloDetector:
             log.warning("model has no person/worker class - per-person compliance will be empty")
         self._warmup()
 
+    def _use_cuda_device(self) -> None:
+        """CUDA's "current device" is per thread and starts at GPU 0. On a multi-GPU server the engine lives on
+        another GPU (cuda:1) while the inference worker thread still points at GPU 0, and TensorRT then fails with
+        "Cuda Runtime Error Code 1" on every frame. Point this thread at the model's GPU before each call."""
+        if not self.is_cuda or ":" not in self.device:
+            return
+        import torch
+
+        try:
+            idx = int(self.device.split(":")[1])
+            if torch.cuda.is_available() and torch.cuda.current_device() != idx:
+                torch.cuda.set_device(idx)
+        except Exception:  # never let device bookkeeping stop a detection call
+            log.debug("could not select %s for this thread", self.device, exc_info=True)
+
     def _warmup(self) -> None:
         t0 = time.perf_counter()
         self.predict([np.zeros((self.imgsz, self.imgsz, 3), dtype=np.uint8)], 0.5)
@@ -269,6 +284,7 @@ class YoloDetector:
         # FP16 only matters on CUDA; newer Ultralytics warns on every call when `half` is passed.
         extra = {"half": True} if self.half else {}
         with self._lock:
+            self._use_cuda_device()
             results = model.predict(
                 frames,
                 conf=conf,
