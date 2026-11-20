@@ -44,8 +44,8 @@ COPY --from=frontend /frontend/dist /app/frontend/dist
 # not root: a compromise of the web app must not own the container. Host folders mounted at
 # /app/config, /app/data, /app/videos and /app/models must be writable by APP_UID:APP_GID.
 RUN groupadd -g ${APP_GID} ppe && useradd -u ${APP_UID} -g ${APP_GID} -M -d /app -s /usr/sbin/nologin ppe \
- && mkdir -p /app/config /app/data /app/videos /app/models /tmp/ultralytics \
- && chown -R ppe:ppe /app/config /app/data /app/videos /app/models /tmp/ultralytics
+ && mkdir -p /app/config /app/data /app/videos /app/models /app/logs /tmp/ultralytics \
+ && chown -R ppe:ppe /app/config /app/data /app/logs /app/videos /app/models /tmp/ultralytics
 USER ppe
 
 EXPOSE 8000

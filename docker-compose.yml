@@ -24,10 +24,13 @@ services:
       PPE_COOKIE_SECURE: ${PPE_COOKIE_SECURE:-auto}
       # plant time zone: "violations today" and the CSV local_time column use it (e.g. Asia/Kolkata)
       TZ: ${TZ:-UTC}
+      # application log kept on disk (rotated, 10 x 10 MB) so it survives `docker compose down` / rebuilds
+      PPE_LOG_DIR: /app/logs
     volumes:
       - ./videos:/app/videos                    # camera clips / NVR exports (writable: Add camera > Upload saves here)
       - ./models:/app/models                    # weights (+ cached OpenVINO export)
       - ./config:/app/config                    # config.yaml + config.backup.<timestamp>.yaml (persistent)
+      - ./logs:/app/logs                        # ppe-monitor.log (rotated): survives container recreation
       - ./data:/app/data                        # violations.db: violations, users, audit log (persistent)
     restart: unless-stopped
     stop_grace_period: 15s

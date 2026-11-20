@@ -12,6 +12,7 @@ videos/*
 !videos/README.md
 backend/data/
 data/
+logs/
 config/
 backend/config.backup.*.yaml
 # local dev config (plant camera list); installs start from backend/config.default.yaml

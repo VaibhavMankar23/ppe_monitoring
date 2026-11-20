@@ -10,6 +10,7 @@ import argparse
 import logging
 import os
 import shutil
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import uvicorn
@@ -31,6 +32,21 @@ def seed_config(cfg_path: Path) -> None:
     logging.getLogger("run").warning("no settings in %s: created it from %s", cfg_path, DEFAULT_CONFIG.name)
 
 
+def add_file_logging() -> None:
+    """Keep the logs on disk (PPE_LOG_DIR, a mounted volume in Docker) so they survive container recreation.
+    Rotates at 10 MB, 10 files. Includes the one-time "SECURITY:" admin password line. Off when PPE_LOG_DIR is empty."""
+    log_dir = os.environ.get("PPE_LOG_DIR", "").strip()
+    if not log_dir:
+        return
+    try:
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        h = RotatingFileHandler(Path(log_dir) / "ppe-monitor.log", maxBytes=10_000_000, backupCount=10, encoding="utf-8")
+        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(h)
+    except OSError as e:  # e.g. folder not writable: keep running with console logs only
+        logging.getLogger("run").warning("cannot write logs to %s (%s): console only", log_dir, e)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="PPE compliance monitor")
     parser.add_argument("--config", default=None, help="path to config.yaml (default: $PPE_CONFIG or backend/config.yaml)")
@@ -42,6 +58,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    add_file_logging()
     cfg_path = Path(args.config).resolve() if args.config else default_config_path()
     seed_config(cfg_path)
     cfg = load_config(cfg_path)

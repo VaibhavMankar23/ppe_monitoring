@@ -326,6 +326,8 @@ delete `models/safesight/*.engine` and `models/safesight/*_openvino_model/`, the
 | Are all cameras working? | Setup > System health |
 | Review alerts | Review queue: **V** = valid, **F** = false alarm |
 | Reset a password | Setup > People > user > Reset password |
+| Super Admin locked out (no data lost) | `docker compose exec ppe-monitor python -m app.reset_password --generate` (add `--user NAME` for another user) |
+| Logs on disk | `logs/ppe-monitor.log` (rotated, survives `docker compose down`) |
 | Who changed what | Setup > Audit trail |
 | Restart | `docker compose restart ppe-monitor` |
 | Stop / start everything | `docker compose down` / `docker compose up -d` |
