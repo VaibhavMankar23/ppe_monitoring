@@ -6,6 +6,15 @@ All notable changes to the PPE Compliance Monitor. Dates are IST.
 
 Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and acceptance testing.
 
+### Stall diagnostics (Nov 2026)
+- **Added:** a stall watchdog. When at least half of the running cameras (and at least 3) stop producing detection
+  results at the same time, the log gets one `STALL:` line with the state of everything they share: the detection
+  thread (how long ago it last looped, its last call time, utilisation), the post-processing pool (workers, queue,
+  cameras with a frame in flight), slow database locks, host load and the GPUs. A `STALL over` line follows when they
+  recover. Before, an all-cameras stall that came and went left nothing to explain it.
+- **Added:** the database write lock is timed. Every worker writes through that one lock, so one slow write can hold
+  up all of them. Waits and holds of at least 50 ms appear under "Timings in this window" on System health.
+
 ### Detector efficiency (Nov 2026)
 - **Added (off by default):** `model.person_tile_every`. The tiled person model runs on every Nth frame of a camera
   and the frames in between reuse its last result (never older than 3 s). The PPE model still sees every frame.

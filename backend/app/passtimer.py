@@ -90,3 +90,31 @@ class PassTimer:
 
 
 passes = PassTimer()
+
+
+class TimedLock:
+    """A lock that reports slow waits and slow holds as timing samples (``<name>_wait_s``, ``<name>_held_s``).
+
+    Only waits and holds of at least ``min_s`` are recorded, so the System health panel and the stall report
+    show a lock only when it actually made something wait. Used for the database write lock: every worker writes
+    through it, so one slow write (a large evidence row, a checkpoint) can hold up all of them at once."""
+
+    def __init__(self, name: str, min_s: float = 0.05) -> None:
+        self._lock = threading.Lock()
+        self._name = name
+        self._min = min_s
+        self._since = 0.0
+
+    def __enter__(self) -> "TimedLock":
+        t0 = time.perf_counter()
+        self._lock.acquire()
+        self._since = time.perf_counter()
+        if self._since - t0 >= self._min:
+            passes.sample(f"{self._name}_wait_s", self._since - t0)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        held = time.perf_counter() - self._since
+        self._lock.release()
+        if held >= self._min:
+            passes.sample(f"{self._name}_held_s", held)

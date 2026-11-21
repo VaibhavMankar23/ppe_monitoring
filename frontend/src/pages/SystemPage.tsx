@@ -490,11 +490,14 @@ const COUNTER_LABEL: Record<string, string> = {
   blank_padding_crops: "blank crops added to fill a batch",
   evidence_recheck_held_back: "evidence re-checks held back",
   crops_reused: "crop results reused",
+  stall_episodes: "times most cameras stalled at once",
 };
 
 const TIMING_LABEL: Record<string, string> = {
   confirmation_wait_s: "First unsafe frame to confirmed violation",
   evidence_build_s: "Evidence built (sharp re-check, four pictures)",
+  db_write_wait_s: "A worker waited for the database (slow waits only)",
+  db_write_held_s: "A database write held everyone else up (slow writes only)",
 };
 
 /** Every kind of model call: full frames, person tiles, person crops, evidence. Shows where the detector's time goes. */
@@ -537,11 +540,11 @@ function PassesPanel({ data }: { data?: PassSummary }) {
       </div>
       {(data.timings ?? []).length > 0 && (
         <div className="border-t border-line px-4 py-2.5 text-xs text-ink-3">
-          <div className="mb-1 font-medium text-ink-2">Time per violation in this window</div>
+          <div className="mb-1 font-medium text-ink-2">Timings in this window</div>
           {(data.timings ?? []).map((t) => (
             <div key={t.name}>
               {TIMING_LABEL[t.name] ?? t.name}: <span className="num text-ink-2">{t.avg.toFixed(2)} s</span> on average,{" "}
-              <span className="num text-ink-2">{t.max.toFixed(2)} s</span> at most ({t.n} violation{t.n === 1 ? "" : "s"})
+              <span className="num text-ink-2">{t.max.toFixed(2)} s</span> at most ({t.n}x)
             </div>
           ))}
         </div>

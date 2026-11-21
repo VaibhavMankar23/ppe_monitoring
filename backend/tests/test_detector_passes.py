@@ -12,8 +12,8 @@ import numpy as np
 
 from app.config import load_config
 from app.detector import CompositeDetector, YoloDetector
-from app.passtimer import PassTimer, passes
-from app.pipeline import VERIFY_RETRY_SECONDS, InferenceEngine, StreamWorker
+from app.passtimer import PassTimer, TimedLock, passes
+from app.pipeline import VERIFY_RETRY_SECONDS, InferenceEngine, Monitor, StreamWorker
 from app.ppe_logic import Detection, PersonCompliance
 from app.sources import Frame
 from app.violations import Fire, Incident
@@ -342,3 +342,75 @@ def test_a_stored_violation_records_how_long_it_waited_and_how_long_the_evidence
     by_name = {t["name"]: t for t in passes.snapshot()["timings"]}
     assert by_name["confirmation_wait_s"]["avg"] == 1.5 and by_name["confirmation_wait_s"]["n"] == 1
     assert by_name["evidence_build_s"]["n"] == 1 and by_name["evidence_build_s"]["avg"] >= 0
+
+
+# ------------------------------------------------------------------ stall diagnostics
+def test_timed_lock_records_only_slow_waits_and_holds():
+    passes.reset()
+    lock = TimedLock("t", min_s=0.03)
+    with lock:
+        pass
+    assert passes.snapshot()["timings"] == []  # fast use leaves no trace
+
+    def hold():
+        with lock:
+            time.sleep(0.12)
+
+    th = threading.Thread(target=hold)
+    th.start()
+    time.sleep(0.03)
+    with lock:  # has to wait for the other thread
+        pass
+    th.join()
+    by = {t["name"]: t for t in passes.snapshot()["timings"]}
+    assert by["t_wait_s"]["max"] >= 0.05 and by["t_held_s"]["max"] >= 0.1
+
+
+def fake_monitor(statuses, engines=True):
+    import queue
+
+    workers = {str(i): SimpleNamespace(running=True, status=s, _busy=(s == "stalled")) for i, s in enumerate(statuses)}
+    eng = [SimpleNamespace(name="batched", last_loop=time.monotonic() - 1.0, last_call_ms=40.0, contended=3,
+                           stats=lambda: {"utilization": 0.5})] if engines else []
+    return SimpleNamespace(workers=workers, engines=eng, pool=SimpleNamespace(_work_queue=queue.Queue()), post_workers=6)
+
+
+def test_no_stall_report_while_cameras_are_fine_or_only_a_few_stall():
+    assert Monitor.stall_report(fake_monitor(["live"] * 6)) is None
+    assert Monitor.stall_report(fake_monitor(["live"] * 5 + ["stalled"])) is None  # one camera: not a shared problem
+    assert Monitor.stall_report(fake_monitor(["stalled", "stalled"])) is None  # too few cameras to say
+
+
+def test_stall_report_names_the_shared_parts_when_half_the_cameras_stall():
+    r = Monitor.stall_report(fake_monitor(["stalled"] * 3 + ["live"] * 3))
+    assert r["stalled"] == 3 and r["running"] == 6 and r["post_workers"] == 6 and r["post_queue"] == 0
+    assert r["engines"][0]["last_call_ms"] == 40 and 0.5 < r["engines"][0]["last_loop_s_ago"] < 3
+    assert r["cameras_with_a_frame_in_flight"] == 3
+    assert {"slow_database_locks", "host", "gpus"} <= set(r)
+
+
+def test_watchdog_logs_once_when_a_stall_starts_and_once_when_it_ends(monkeypatch, caplog):
+    import logging
+
+    import app.pipeline as P
+
+    monkeypatch.setattr(P, "STALL_CHECK_SECONDS", 0.01)
+    report = {"stalled": 4, "running": 6}
+    states = iter([None, report, report, report, None, None])
+    fake = SimpleNamespace(_wd_stop=threading.Event())
+
+    def next_report():
+        try:
+            return next(states)
+        except StopIteration:
+            fake._wd_stop.set()
+            return None
+
+    fake.stall_report = next_report
+    passes.reset()
+    with caplog.at_level(logging.WARNING, logger="app.pipeline"):
+        Monitor._watch(fake)
+    msgs = [r.getMessage() for r in caplog.records]
+    assert sum(m.startswith("STALL:") for m in msgs) == 1  # three bad checks in a row: one line
+    assert sum(m.startswith("STALL over") for m in msgs) == 1
+    assert next(c for c in passes.snapshot()["counters"] if c["name"] == "stall_episodes")["total"] == 1

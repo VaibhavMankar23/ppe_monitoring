@@ -30,10 +30,10 @@ def test_no_nvidia_tool_means_no_gpu_section(monkeypatch):
 
 
 def test_server_name_comes_from_env_else_host_name(monkeypatch):
-    monkeypatch.setenv("PPE_SERVER_NAME", "dataeaze-office")
+    monkeypatch.setenv("PPE_SERVER_NAME", "plant-server")
     monkeypatch.setenv("PPE_GIT_COMMIT", "abc1234")
     info = H.server_info()
-    assert info["name"] == "dataeaze-office" and info["build"] == "abc1234" and info["version"] == H.APP_VERSION
+    assert info["name"] == "plant-server" and info["build"] == "abc1234" and info["version"] == H.APP_VERSION
     monkeypatch.delenv("PPE_SERVER_NAME")
     monkeypatch.delenv("PPE_GIT_COMMIT")
     info = H.server_info()

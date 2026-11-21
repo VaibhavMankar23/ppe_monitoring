@@ -26,6 +26,8 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
+from .passtimer import TimedLock
+
 log = logging.getLogger(__name__)
 
 
@@ -224,7 +226,7 @@ class ViolationStore:
 
         Base.metadata.create_all(self.engine)
         self._migrate()
-        self._write_lock = threading.Lock()
+        self._write_lock = TimedLock("db_write")  # slow waits and holds show up on System health and in stall reports
         self._update_subscribers: list[Callable[[dict[str, Any]], None]] = []
         with self.engine.begin() as conn:  # events a previous run left open can't be extended any more
             conn.execute(update(ViolationRow).where(ViolationRow.state == "ongoing").values(state="ended"))

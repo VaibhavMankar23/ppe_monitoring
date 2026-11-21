@@ -49,6 +49,7 @@ from .violations_db import OBS_BUCKET, ViolationStore
 log = logging.getLogger(__name__)
 
 STALL_SECONDS = 5.0
+STALL_CHECK_SECONDS = 2.0  # how often the watchdog looks for many cameras stalled at once
 PRIORITY_RANK = {"high": 0, "normal": 1, "low": 2}
 PRIORITY_FPS = {"high": 1.0, "normal": 1.0, "low": 1 / 3}  # x inference.max_fps_per_stream
 
@@ -762,6 +763,8 @@ class InferenceEngine:
         # load / capacity stats (last STATS_WINDOW seconds)
         self._calls: deque[tuple[float, float, int]] = deque()  # (end time, busy seconds, frames)
         self.contended = 0  # loops where more cameras were ready than fit in one batch
+        self.last_loop = time.monotonic()  # heartbeat: the stall watchdog reports how long ago the engine last looped
+        self.last_call_ms = 0.0  # duration of the most recent detection call, crop pass included
 
     STATS_WINDOW = 10.0
 
@@ -831,6 +834,7 @@ class InferenceEngine:
     def _run(self) -> None:
         while not self._stop.is_set():
             now = time.monotonic()
+            self.last_loop = now
             for w in self.workers:  # focus mode: paused cameras still get their video refreshed
                 if w.preview_due(now):
                     w.submit_preview(now)
@@ -865,6 +869,7 @@ class InferenceEngine:
                 self._stop.wait(0.5)
                 continue
             busy = time.perf_counter() - t0
+            self.last_call_ms = busy * 1000
             self._calls.append((time.monotonic(), busy, len(frames)))
             for (w, f), dets in zip(frames, results):
                 w.submit(f, dets, busy * 1000, len(frames))
@@ -986,6 +991,8 @@ class Monitor:
         self._focus: tuple[str, float] | None = None  # (stream id, lease expiry, monotonic)
         self.engines: list[InferenceEngine] = []
         self.workers: dict[str, StreamWorker] = {s.id: self._new_worker(s, cfg) for s in cfg.streams}
+        self._wd_stop = threading.Event()
+        self._wd_thread: threading.Thread | None = None
         self.device = ""
         self.imgsz = 0
         self.model_classes: list[str] = []
@@ -1108,8 +1115,51 @@ class Monitor:
             for w in self.workers.values():
                 if w.cfg.enabled:
                     w.start()
+        self._wd_stop.clear()
+        self._wd_thread = threading.Thread(target=self._watch, name="stall-watchdog", daemon=True)
+        self._wd_thread.start()
+
+    def stall_report(self) -> dict[str, Any] | None:
+        """None while the cameras are fine. When at least half of the running cameras (and at least 3) are stalled
+        at once, the shared parts that can stall all of them together: the detection thread, the post-processing
+        pool, the database write lock, the host and the GPUs."""
+        running = [w for w in self.workers.values() if w.running]
+        stalled = [w for w in running if w.status == "stalled"]
+        if len(running) < 3 or len(stalled) * 2 < len(running):
+            return None
+        now = time.monotonic()
+        queue = getattr(self.pool, "_work_queue", None)  # private attribute of the pool: best effort
+        return {
+            "stalled": len(stalled), "running": len(running),
+            "engines": [{"name": e.name, "last_loop_s_ago": round(now - e.last_loop, 1), "last_call_ms": round(e.last_call_ms),
+                         "utilization": e.stats()["utilization"], "contended_loops": e.contended} for e in self.engines],
+            "post_workers": self.post_workers, "post_queue": queue.qsize() if queue is not None else None,
+            "cameras_with_a_frame_in_flight": sum(1 for w in running if w._busy),
+            "slow_database_locks": [t for t in passes.snapshot()["timings"] if t["name"].startswith("db_")],
+            "host": sampler.host(), "gpus": sampler.gpus(),
+        }
+
+    def _watch(self) -> None:
+        """One log line when most cameras stall together, one when they recover, so a stall that comes and goes
+        can be explained afterwards from the log alone."""
+        since: float | None = None
+        while not self._wd_stop.wait(STALL_CHECK_SECONDS):
+            try:
+                report = self.stall_report()
+            except Exception:  # a diagnostic must never break the monitor
+                log.exception("stall check failed")
+                continue
+            if report is not None and since is None:
+                since = time.monotonic()
+                passes.count("stall_episodes")
+                log.warning("STALL: %d of %d cameras are not producing detection results. %s",
+                            report["stalled"], report["running"], json.dumps(report, default=str))
+            elif report is None and since is not None:
+                log.warning("STALL over: the cameras produce results again after %.0f s", time.monotonic() - since)
+                since = None
 
     def stop(self) -> None:
+        self._wd_stop.set()
         with self._lock:
             for e in self.engines:
                 e.stop()
