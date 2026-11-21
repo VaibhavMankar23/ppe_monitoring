@@ -132,11 +132,10 @@ stateDiagram-v2
     [*] --> Seen: worker missing a required item
     Seen --> Confirmed: still missing after min_violation_seconds, across enough frames
     Seen --> [*]: compliant or unknown frame resets it
-    Confirmed --> Open: ONE record stored with best evidence
-    Open --> Open: extended while it continues (last seen, duration, new items)
-    Open --> Ended: no violation for event_gap_seconds
-    Ended --> Alarmed: webhook and/or email sent
-    Alarmed --> Reviewed: reviewer marks Valid or False alarm
+    Confirmed --> Stored: ONE record with the best evidence, alarm sent now
+    Stored --> Stored: extended while it continues (last seen, duration, new items)
+    Stored --> Ended: no violation for event_gap_seconds
+    Ended --> Reviewed: reviewer marks Valid or False alarm
     Reviewed --> Dataset: verdicts exported to retrain the model
     Reviewed --> Aged: images dropped, then rows deleted by retention
     Aged --> [*]
