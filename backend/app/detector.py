@@ -267,6 +267,24 @@ class YoloDetector:
         self.predict([np.zeros((self.imgsz, self.imgsz, 3), dtype=np.uint8)], 0.5)
         log.info("warm-up done in %.0f ms", (time.perf_counter() - t0) * 1000)
 
+    @staticmethod
+    def _stack_boxes(results: list) -> "np.ndarray | None":
+        """Every box of one model call as one [N, 6] array (x1, y1, x2, y2, confidence, class).
+
+        Reading boxes image by image costs three device-to-host transfers per image, and each one waits for the GPU:
+        a batch of cameras plus its person tiles and crops is well over a hundred. Stacking them first makes it one
+        transfer per model call. The values are the same ones the old path read (xyxy, conf and cls are slices of the
+        same tensor). None when the results are not tensors that can be stacked."""
+        try:
+            import torch
+
+            live = [r.boxes.data for r in results if r.boxes is not None and len(r.boxes)]
+            if not live:
+                return np.empty((0, 6), np.float32)
+            return torch.cat(live).cpu().numpy()
+        except Exception:  # no torch, or boxes that do not carry a tensor: the caller reads them image by image
+            return None
+
     def predict(self, frames: list[np.ndarray], conf: float, imgsz: int | None = None) -> list[list[Detection]]:
         """Detect on full frames (imgsz=None) or on small crops (imgsz = crop inference size)."""
         if not frames:
@@ -297,13 +315,21 @@ class YoloDetector:
                 verbose=False,
                 **extra,
             )
+        stacked = self._stack_boxes(results)
         out: list[list[Detection]] = []
+        at = 0
         for r in results:
             dets: list[Detection] = []
             if r.boxes is not None and len(r.boxes):
-                xyxy = r.boxes.xyxy.cpu().numpy()
-                confs = r.boxes.conf.cpu().numpy()
-                clss = r.boxes.cls.cpu().numpy().astype(int)
+                if stacked is not None:
+                    n = len(r.boxes)
+                    rows = stacked[at:at + n]
+                    at += n
+                    xyxy, confs, clss = rows[:, :4], rows[:, 4], rows[:, 5].astype(int)
+                else:  # results that do not carry one tensor per image (test doubles): the original per-image path
+                    xyxy = r.boxes.xyxy.cpu().numpy()
+                    confs = r.boxes.conf.cpu().numpy()
+                    clss = r.boxes.cls.cpu().numpy().astype(int)
                 for b, c, k in zip(xyxy, confs, clss):
                     dets.append(Detection(self.class_table[int(k)], float(c), tuple(float(v) for v in b)))  # type: ignore[arg-type]
             out.append(dets)

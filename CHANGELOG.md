@@ -6,6 +6,12 @@ All notable changes to the PPE Compliance Monitor. Dates are IST.
 
 Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and acceptance testing.
 
+### Faster result reading (Nov 2026)
+- **Changed (same results):** `YoloDetector.predict` reads the boxes of a whole model call with one device-to-host
+  transfer instead of three per image. A batch of cameras with their person tiles and crops is well over a hundred
+  images, and each transfer waits for the GPU. The detections are identical (xyxy, confidence and class are slices
+  of the same tensor); results that carry no tensor use the original path. Tests compare both paths.
+
 ### Stall diagnostics (Nov 2026)
 - **Added:** a stall watchdog. When at least half of the running cameras (and at least 3) stop producing detection
   results at the same time, the log gets one `STALL:` line with the state of everything they share: the detection

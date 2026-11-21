@@ -414,3 +414,80 @@ def test_watchdog_logs_once_when_a_stall_starts_and_once_when_it_ends(monkeypatc
     assert sum(m.startswith("STALL:") for m in msgs) == 1  # three bad checks in a row: one line
     assert sum(m.startswith("STALL over") for m in msgs) == 1
     assert next(c for c in passes.snapshot()["counters"] if c["name"] == "stall_episodes")["total"] == 1
+
+
+# ------------------------------------------------------------------ results are read with one transfer per model call
+class CountingBoxes:
+    """What Ultralytics hands back for one image: one [N, 6] tensor, with xyxy / conf / cls as views of it.
+    `reads` counts how often the per-image views are touched (each is a device-to-host transfer on a GPU)."""
+
+    def __init__(self, rows, has_data=True):
+        import torch
+
+        self._t = torch.tensor(rows, dtype=torch.float32).reshape(-1, 6)
+        self.reads = 0
+        self._has_data = has_data
+
+    def __len__(self):
+        return len(self._t)
+
+    @property
+    def data(self):
+        if not self._has_data:
+            raise AttributeError("data")
+        return self._t
+
+    def _view(self, sl):
+        self.reads += 1
+        return self._t[:, sl]
+
+    xyxy = property(lambda s: s._view(slice(0, 4)))
+    conf = property(lambda s: s._view(4))
+    cls = property(lambda s: s._view(5))
+
+
+class StubModel:
+    def __init__(self, per_image):
+        self.per_image = per_image
+
+    def predict(self, frames, **kw):
+        return [SimpleNamespace(boxes=b) for b in self.per_image]
+
+
+def run_detector(boxes):
+    d = fake_yolo_detector()
+    d._model = StubModel(boxes)
+    d.class_table = {0: "person", 1: "helmet", 2: "no_helmet"}
+    d._keep = [0, 1, 2]
+    img = np.zeros((48, 64, 3), np.uint8)
+    return d.predict([img] * len(boxes), 0.3)
+
+
+ROWS = [
+    [[10.5, 20.25, 110.0, 220.5, 0.91, 0], [40.0, 30.0, 70.0, 60.0, 0.78, 2]],
+    [],
+    [[5.0, 6.0, 7.0, 8.0, 0.35, 1]],
+    [[1.0, 2.0, 3.0, 4.0, 0.5, 0], [2.0, 3.0, 4.0, 5.0, 0.6, 1], [3.0, 4.0, 5.0, 6.0, 0.7, 2]],
+]
+
+
+def test_stacked_reading_gives_exactly_the_same_detections_as_the_per_image_path():
+    fast = run_detector([CountingBoxes(r) for r in ROWS])
+    slow = run_detector([CountingBoxes(r, has_data=False) for r in ROWS])  # no tensor to stack: the old path
+    assert fast == slow
+    assert [len(x) for x in fast] == [2, 0, 1, 3]
+    first = fast[0][0]
+    assert first.cls == "person" and first.conf == np.float32(0.91) and first.box == (10.5, 20.25, 110.0, 220.5)
+
+
+def test_stacked_reading_does_not_touch_the_per_image_views():
+    boxes = [CountingBoxes(r) for r in ROWS]
+    run_detector(boxes)
+    assert sum(b.reads for b in boxes) == 0  # before: 3 reads for every image that had boxes
+    slow = [CountingBoxes(r, has_data=False) for r in ROWS]
+    run_detector(slow)
+    assert sum(b.reads for b in slow) == 3 * 3  # three images had boxes, three reads each
+
+
+def test_a_call_without_any_boxes_still_returns_one_empty_list_per_image():
+    assert run_detector([CountingBoxes([]), CountingBoxes([])]) == [[], []]
