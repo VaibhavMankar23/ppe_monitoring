@@ -60,6 +60,11 @@ class ModelConfig(_Model):
     person_weights: str = ""
     person_imgsz: int = Field(640, ge=160, le=1920, multiple_of=32)
     person_tiles: int = Field(2, ge=1, le=3)
+    # Run the tiled person model on every Nth frame of a camera; the frames in between reuse its last result
+    # (at most 3 s old). 1 = every frame (default). Larger values cut the tile pass roughly by N, at the price of
+    # person boxes that are up to N-1 frames old. Measure on your recordings first (System health, "Where detector
+    # time goes").
+    person_tile_every: int = Field(1, ge=1, le=10)
 
 
 class InferenceConfig(_Model):
@@ -74,6 +79,9 @@ class InferenceConfig(_Model):
     refine_imgsz: int = Field(320, ge=160, le=960, multiple_of=32)
     refine_max_persons: int = Field(6, ge=1, le=32)
     refine_batch: int = Field(0, ge=0, le=16)  # crops per model call; 0 = auto for the device (see pipeline.AUTO_BATCH)
+    # Re-detect each worker on a sharp crop every Nth processed frame; in between the last crop result is reused,
+    # moved with the worker (at most 3 s old). 1 = every frame (default). Cuts the crop pass roughly by N.
+    refine_every: int = Field(1, ge=1, le=10)
     refine_min_height: int = Field(24, ge=0)  # px at process resolution
     # Scaling to many cameras
     max_batch: int = Field(0, ge=0, le=32)  # frames per model call (0 = auto for the device); ready cameras beyond it wait a turn

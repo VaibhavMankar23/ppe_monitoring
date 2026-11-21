@@ -414,7 +414,8 @@ export interface PassStat {
   share: number;
 }
 export interface PassCounter { name: string; per_s: number; total: number }
-export interface PassSummary { window_s: number; passes: PassStat[]; counters: PassCounter[] }
+export interface PassTiming { name: string; n: number; avg: number; max: number }
+export interface PassSummary { window_s: number; passes: PassStat[]; counters: PassCounter[]; timings?: PassTiming[] }
 
 export interface EngineStats {
   name: string;

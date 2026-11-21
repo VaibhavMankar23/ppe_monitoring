@@ -7,6 +7,14 @@ All notable changes to the PPE Compliance Monitor. Dates are IST.
 Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and acceptance testing.
 
 ### Detector efficiency (Nov 2026)
+- **Added (off by default):** `model.person_tile_every`. The tiled person model runs on every Nth frame of a camera
+  and the frames in between reuse its last result (never older than 3 s). The PPE model still sees every frame.
+  With the default 1 nothing changes. Per camera, so a busy camera does not starve a quiet one.
+- **Added (off by default):** `inference.refine_every`. The sharp crop pass runs every Nth frame for a worker; the
+  frames in between reuse the last crop result, moved with the worker (same place, IoU at least 0.6, never older than
+  3 s). A worker who is somewhere else always gets a fresh crop pass. With the default 1 nothing changes.
+- **Added:** System health also shows, per violation, the time from the first unsafe frame to the confirmed violation and
+  the time spent building the evidence, so the decision delay is measured and split into those two parts.
 - **Changed:** the person-crop pass no longer fills its batch with blank images on NVIDIA GPUs and on the CPU. It
   did so everywhere, which was only needed on the Intel GPU, where every new shape recompiles. One worker in view
   meant 1 real crop and 7 blank ones; now only the real crops are sent. The Intel GPU keeps fixed shapes. Warm-up

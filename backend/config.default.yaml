@@ -23,6 +23,7 @@ model:
   person_weights: ${PPE_PERSON_WEIGHTS:-../models/coco/yolov8n.pt}
   person_imgsz: 640
   person_tiles: 2           # 1 = whole frame, 2 = 2x2 tiles, 3 = 3x3 (very wide or high cameras)
+  person_tile_every: 1      # run the tiled person model on every Nth frame of a camera; frames between reuse its last result (max 3 s old). 1 = every frame
   # auto = NVIDIA CUDA if present (TensorRT, else PyTorch), else OpenVINO on an Intel iGPU, else OpenVINO CPU,
   # else PyTorch CPU.
   device: auto
@@ -56,6 +57,7 @@ inference:
   refine_imgsz: 320
   refine_max_persons: 6
   refine_batch: 0           # person crops per model call; 0 = auto (8 on NVIDIA, 4 Intel GPU, 2 CPU)
+  refine_every: 1           # re-detect each worker on a sharp crop every Nth frame; frames between reuse the last result (max 3 s old). 1 = every frame
   max_batch: 0              # camera frames per model call; 0 = auto (16 on NVIDIA, 8 elsewhere)
 
 tracking:

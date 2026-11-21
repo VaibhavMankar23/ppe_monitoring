@@ -39,7 +39,7 @@ from .hostinfo import sampler, server_info
 from .passtimer import passes
 from .ppe_logic import (
     BEHAVIOR_CLASS, Box, ComplianceSmoother, Detection, PersonCompliance, PPE_ITEMS, Zone, ZONE_ITEMS, apply_zones, drop_group_boxes, mask_unmonitored, crop_region, detectable_items, disproved_items, evaluate_frame, match_person, unchecked,
-    merge_refined, refine_person_box,
+    merge_refined, refine_person_box, iou,
 )
 from .sources import Frame, FrameGrabber
 from .tracker import ByteTracker
@@ -83,6 +83,7 @@ THUMB_HEIGHT = 240
 VIEW_WIDTHS = (320, 480, 640)  # sizes a viewer can ask for (rounded up); larger = full processing width
 RATE_WINDOW_S = 3.0  # seconds of frames that confirm a violation / smooth a verdict at low frame rates
 OBS_FLUSH_SECONDS = 60.0  # how often worker counters (compliance-rate denominator) are written
+REFINE_CACHE_MAX_AGE = 3.0  # s: a reused crop result is never older than this, whatever refine_every says
 VERIFY_RETRY_SECONDS = 3.0  # an ongoing event re-checks a new missing item at most this often (each check is a model call)
 EVENT_WRITE_SECONDS = 2.0  # how often an ongoing violation event is written back (duration / observations)
 
@@ -132,6 +133,8 @@ class StreamWorker:
         # stored-event bookkeeping: incident key -> (last DB write, missing set written)
         self._inc_written: dict[int, tuple[float, frozenset[str]]] = {}
         self._verify_at: dict[int, float] = {}  # incident key -> when its new missing items were last re-checked
+        # inference.refine_every > 1: the last crop result of each worker, reused for the frames in between
+        self._refine_cache: list[tuple[Box, int, Detection, list[Detection], float]] = []
         # identifies the exact settings a violation was produced with (secrets never leave the hash)
         self._cfg_sha = hashlib.sha256(json.dumps(app_cfg.model_dump(mode="json"), sort_keys=True, default=str)
                                        .encode()).hexdigest()[:16]
@@ -193,6 +196,7 @@ class StreamWorker:
         self._flush_observations()
         self.grabber.stop()
         self.tracker.reset()
+        self._refine_cache = []
         self._close_incidents()
         self.debouncer.reset()
         self.smoother = ComplianceSmoother(self.app_cfg.compliance.smoothing_window)  # IDs restart at #1
@@ -468,6 +472,7 @@ class StreamWorker:
 
     def _record_violation(self, frame: Frame, p: PersonCompliance, fire: Fire | None = None,
                           score: float | None = None) -> None:
+        t_rec = time.perf_counter()
         full = frame.full_res
         box, confirmed, others, sharp_ppe = self.evidence(frame, p)
         if confirmed is False and self.app_cfg.alerts.drop_unconfirmed:
@@ -491,6 +496,8 @@ class StreamWorker:
         frame_wall = frame.ts + off
         detected_wall = fire.since + off if fire else frame_wall
         confirmed_wall = fire.incident.start + off if fire else frame_wall
+        if fire:
+            passes.sample("confirmation_wait_s", max(0.0, confirmed_wall - detected_wall))  # first bad frame to confirmed
         item_conf = self._item_confidence(p, missing)
         when = datetime.fromtimestamp(frame_wall).strftime("%d %b %Y %H:%M:%S")
         q = [cv2.IMWRITE_JPEG_QUALITY, self._snap_quality]
@@ -537,6 +544,7 @@ class StreamWorker:
             "evidence": {"rendered_at": datetime.now(timezone.utc).isoformat(),
                          "sha256": {"image": sha(image_b), "original": sha(original), "crop": sha(crop_b)}},
         }
+        passes.sample("evidence_build_s", time.perf_counter() - t_rec)  # sharp re-check, four pictures, metadata
         try:
             d = self.store.add(self.id, self.cfg.name, p.track_id, missing, image_b, thumb_b, ts=detected_wall,
                                run_id=self.run_id, confidence=round(sum(seen) / len(seen), 3) if seen else round(p.conf, 3),
@@ -840,7 +848,13 @@ class InferenceEngine:
             conf = min([self.low_thresh] + [w.confidence for w, _ in frames])
             t0 = time.perf_counter()
             try:
-                results = self.detector.predict(self._pad([f.image for _, f in frames]), conf)[: len(frames)]
+                images = self._pad([f.image for _, f in frames])
+                keyed = getattr(self.detector, "predict_keyed", None)  # lets the person model skip frames (model.person_tile_every)
+                if keyed is not None:
+                    keys = [w.id for w, _ in frames] + [None] * (len(images) - len(frames))
+                    results = keyed(images, conf, keys)[: len(frames)]
+                else:
+                    results = self.detector.predict(images, conf)[: len(frames)]
                 if self.icfg.person_refine:
                     results = self._refine(frames, results, conf)
             except Exception as e:
@@ -855,10 +869,34 @@ class InferenceEngine:
             for (w, f), dets in zip(frames, results):
                 w.submit(f, dets, busy * 1000, len(frames))
 
+    @staticmethod
+    def _shift(d: Detection, dx: float, dy: float) -> Detection:
+        b = d.box
+        return Detection(d.cls, d.conf, (b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy))
+
+    @staticmethod
+    def _reusable(old: list, box: Box, now: float, every: int):
+        """The cached crop result that belongs to this worker (same place as last time, fresh enough), removed from
+        `old` so that two workers never share one; None when there is none."""
+        best, best_iou = None, 0.6
+        for e in old:
+            if e[1] < every - 1 and now - e[4] < REFINE_CACHE_MAX_AGE:
+                o = iou(box, e[0])
+                if o >= best_iou:
+                    best, best_iou = e, o
+        if best is not None:
+            old.remove(best)
+        return best
+
     def _refine(self, frames: list[tuple[StreamWorker, Frame]], results: list[list[Detection]], conf: float) -> list[list[Detection]]:
         ic = self.icfg
+        every = ic.refine_every
+        now = time.monotonic()
         crops, owners = [], []  # owners: (frame index, x offset, y offset, scale full->process)
         refined: list[list[Box]] = [[] for _ in frames]
+        mapped: list[list[Detection]] = [[] for _ in frames]
+        better: dict[int, Detection] = {}  # id(coarse person) -> person box re-detected on its crop
+        fresh_cache: list[list] = [[] for _ in frames]  # what each worker reuses on its next frame (refine_every > 1)
         for i, ((w, f), dets) in enumerate(zip(frames, results)):
             full = f.full_res
             scale = full.shape[1] / f.image.shape[1]
@@ -866,7 +904,22 @@ class InferenceEngine:
                 (d for d in dets if d.cls == "person" and d.conf >= w.confidence and d.box[3] - d.box[1] >= self.refine_min_height),
                 key=lambda d: -d.conf,
             )[: ic.refine_max_persons]
+            old = list(w._refine_cache) if every > 1 else []
             for p in persons:
+                if every > 1:
+                    hit = self._reusable(old, p.box, now, every)
+                    if hit is not None:  # the same worker as in the last crop pass: move that result with the worker
+                        box0, age, fine0, ppe0, when = hit
+                        dx = ((p.box[0] + p.box[2]) - (box0[0] + box0[2])) / 2
+                        dy = ((p.box[1] + p.box[3]) - (box0[1] + box0[3])) / 2
+                        fine = self._shift(fine0, dx, dy)
+                        shifted = [self._shift(d, dx, dy) for d in ppe0]
+                        better[id(p)] = fine
+                        refined[i].append(fine.box)
+                        mapped[i].extend(shifted)
+                        fresh_cache[i].append((p.box, age + 1, fine, shifted, when))
+                        passes.count("crops_reused")
+                        continue
                 fb = (p.box[0] * scale, p.box[1] * scale, p.box[2] * scale, p.box[3] * scale)
                 x1, y1, x2, y2 = crop_region(fb, full.shape[1], full.shape[0])
                 if x2 - x1 < 8 or y2 - y1 < 8:
@@ -874,39 +927,44 @@ class InferenceEngine:
                 square, k = letterbox_square(full[y1:y2, x1:x2], ic.refine_imgsz)
                 crops.append(square)
                 owners.append((i, x1, y1, scale, k, p))
-        if not crops:
+        if every > 1:
+            for (w, _), entries in zip(frames, fresh_cache):
+                w._refine_cache = entries  # replaced below for the workers that got a fresh crop result
+        if not crops and not any(refined):
             return results
 
-        # Fixed input shape (N x S x S, N = refine_batch): accelerators like the OpenVINO GPU
-        # plugin recompile for every new shape, which would stall the pipeline for ~1 s each time.
-        t0 = time.perf_counter()
-        n = self.refine_batch
-        # Fill the last call with blank crops only where the accelerator recompiles for every new shape (the
-        # Intel GPU plugin, as for the full-frame batches in _pad). TensorRT engines take a dynamic batch and the
-        # CPU plugin does not recompile, so there the blanks were pure extra work: one worker in view meant
-        # 1 real crop and 7 blank ones.
-        pad = (-len(crops)) % n if self.pad_batches else 0
-        blank = np.full_like(crops[0], 114)
-        batch = crops + [blank] * pad
-        passes.count("crops", len(crops))
-        if pad:
-            passes.count("blank_padding_crops", pad)
-        crop_dets: list[list[Detection]] = []
-        for j in range(0, len(batch), n):
-            crop_dets += self.detector.predict(batch[j : j + n], conf, imgsz=ic.refine_imgsz)
-        log.debug("[%s] refine: %d crops in %.0f ms", self.name, len(crops), (time.perf_counter() - t0) * 1000)
-        mapped: list[list[Detection]] = [[] for _ in frames]
-        better: dict[int, Detection] = {}  # id(coarse person) -> person box re-detected on its crop
-        for (i, ox, oy, s, k, person), dets in zip(owners, crop_dets):
-            crop_persons = []
-            for d in dets:
-                b = d.box  # square-crop px -> crop px (/k) -> full frame (+offset) -> process res (/s)
-                m = Detection(d.cls, d.conf, (
-                    (b[0] / k + ox) / s, (b[1] / k + oy) / s, (b[2] / k + ox) / s, (b[3] / k + oy) / s))
-                (crop_persons if d.cls == "person" else mapped[i]).append(m)
-            fine = refine_person_box(person, crop_persons)
-            better[id(person)] = fine
-            refined[i].append(fine.box)
+        if crops:
+            # Fixed input shape (N x S x S, N = refine_batch): accelerators like the OpenVINO GPU
+            # plugin recompile for every new shape, which would stall the pipeline for ~1 s each time.
+            t0 = time.perf_counter()
+            n = self.refine_batch
+            # Fill the last call with blank crops only where the accelerator recompiles for every new shape (the
+            # Intel GPU plugin, as for the full-frame batches in _pad). TensorRT engines take a dynamic batch and the
+            # CPU plugin does not recompile, so there the blanks were pure extra work: one worker in view meant
+            # 1 real crop and 7 blank ones.
+            pad = (-len(crops)) % n if self.pad_batches else 0
+            blank = np.full_like(crops[0], 114)
+            batch = crops + [blank] * pad
+            passes.count("crops", len(crops))
+            if pad:
+                passes.count("blank_padding_crops", pad)
+            crop_dets: list[list[Detection]] = []
+            for j in range(0, len(batch), n):
+                crop_dets += self.detector.predict(batch[j : j + n], conf, imgsz=ic.refine_imgsz)
+            log.debug("[%s] refine: %d crops in %.0f ms", self.name, len(crops), (time.perf_counter() - t0) * 1000)
+            for (i, ox, oy, s, k, person), dets in zip(owners, crop_dets):
+                crop_persons, ppe_here = [], []
+                for d in dets:
+                    b = d.box  # square-crop px -> crop px (/k) -> full frame (+offset) -> process res (/s)
+                    m = Detection(d.cls, d.conf, (
+                        (b[0] / k + ox) / s, (b[1] / k + oy) / s, (b[2] / k + ox) / s, (b[3] / k + oy) / s))
+                    (crop_persons if d.cls == "person" else ppe_here).append(m)
+                mapped[i].extend(ppe_here)
+                fine = refine_person_box(person, crop_persons)
+                better[id(person)] = fine
+                refined[i].append(fine.box)
+                if every > 1:
+                    frames[i][0]._refine_cache.append((person.box, 0, fine, ppe_here, now))
         out = []
         for i, dets in enumerate(results):
             persons = [better.get(id(d), d) for d in dets if d.cls == "person"]

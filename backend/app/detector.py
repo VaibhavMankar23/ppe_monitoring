@@ -325,8 +325,10 @@ class CompositeDetector:
     of the same worker are merged so the tracker never sees one worker twice.
     """
 
+    CACHE_MAX_AGE = 3.0  # s: a reused secondary result is never older than this, whatever tile_every says
+
     def __init__(self, primary: Detector, secondary: Detector, keep: "set[str] | None" = None,
-                 role: str = "phone", dedupe: "set[str] | None" = None) -> None:
+                 role: str = "phone", dedupe: "set[str] | None" = None, tile_every: int = 1) -> None:
         self.primary = primary
         self.secondary = secondary
         self.keep = keep if keep is not None else {"phone"}  # secondary classes to merge in
@@ -335,16 +337,19 @@ class CompositeDetector:
         self.imgsz = primary.imgsz
         self.classes = sorted(set(primary.classes) | self.keep)
         self.info = {**getattr(primary, "info", {}), f"{role}_model": getattr(secondary, "info", {})}
+        # only the person model may be skipped on some frames; the behaviour (phone) model runs on every one
+        self.caches_secondary = role == "person"
+        self.tile_every = max(1, tile_every)
+        self._cache: dict[str, tuple[float, int, list[Detection]]] = {}  # camera -> (when, frames reused, secondary result)
 
-    def predict(self, frames: list[np.ndarray], conf: float, imgsz: int | None = None) -> list[list[Detection]]:
-        base = self.primary.predict(frames, conf, imgsz=imgsz)
-        if imgsz is not None:  # crop / evidence pass: primary only (no behaviour detection)
-            return base
+    def _run_secondary(self, frames: list[np.ndarray], conf: float) -> "list[list[Detection]] | None":
         try:
-            extra = self.secondary.predict(frames, conf)
+            return self.secondary.predict(frames, conf)
         except Exception:  # a behaviour-model failure must never take down PPE detection
             log.exception("secondary (behaviour) detector failed; skipping this batch")
-            return base
+            return None
+
+    def _merge(self, base: list[list[Detection]], extra: list[list[Detection]]) -> list[list[Detection]]:
         for dets, ex in zip(base, extra):
             dets.extend(d for d in ex if d.cls in self.keep)
             if self.dedupe:
@@ -353,6 +358,47 @@ class CompositeDetector:
                 kept = [d for d in dets if d.cls not in self.dedupe]
                 dets[:] = kept + dedupe([d for d in dets if d.cls in self.dedupe], 0.5)
         return base
+
+    def predict(self, frames: list[np.ndarray], conf: float, imgsz: int | None = None) -> list[list[Detection]]:
+        base = self.primary.predict(frames, conf, imgsz=imgsz)
+        if imgsz is not None:  # crop / evidence pass: primary only (no behaviour detection)
+            return base
+        extra = self._run_secondary(frames, conf)
+        return base if extra is None else self._merge(base, extra)
+
+    def predict_keyed(self, frames: list[np.ndarray], conf: float, keys: "list[str | None]") -> list[list[Detection]]:
+        """The full-frame pass for the cameras named in `keys` (None = no camera, never cached). Same result as
+        predict(); with tile_every > 1 the person model runs on every Nth frame of a camera and the frames in
+        between reuse its last result."""
+        if not self.caches_secondary:  # the phone model: runs every frame; the person composite inside may cache
+            inner = getattr(self.primary, "predict_keyed", None)
+            base = inner(frames, conf, keys) if inner is not None else self.primary.predict(frames, conf)
+            extra = self._run_secondary(frames, conf)
+            return base if extra is None else self._merge(base, extra)
+        base = self.primary.predict(frames, conf)
+        if self.tile_every <= 1:
+            extra = self._run_secondary(frames, conf)
+            return base if extra is None else self._merge(base, extra)
+        now = time.monotonic()
+        extra: list[list[Detection]] = [[] for _ in frames]
+        todo: list[int] = []
+        for i, k in enumerate(keys):
+            hit = self._cache.get(k) if k is not None else None
+            if hit is not None and hit[1] < self.tile_every - 1 and now - hit[0] < self.CACHE_MAX_AGE:
+                extra[i] = hit[2]
+                self._cache[k] = (hit[0], hit[1] + 1, hit[2])
+            else:
+                todo.append(i)
+        if todo:
+            ran = self._run_secondary([frames[i] for i in todo], conf) or [[] for _ in todo]
+            for i, ex in zip(todo, ran):
+                ex = [d for d in ex if d.cls in self.keep]
+                extra[i] = ex
+                if keys[i] is not None:
+                    self._cache[keys[i]] = (now, 0, ex)
+        for k in [k for k, v in self._cache.items() if now - v[0] > self.CACHE_MAX_AGE]:
+            del self._cache[k]  # cameras that stopped
+        return self._merge(base, extra)
 
 
 def tile_boxes(w: int, h: int, grid: int, overlap: float = 0.2) -> list[tuple[int, int, int, int]]:
@@ -449,8 +495,9 @@ def build_detector(cfg: ModelConfig) -> Detector:
             if "person" not in people.classes:
                 raise ValueError("no person class")
             primary = CompositeDetector(primary, TiledPersonDetector(people, cfg.person_tiles), keep={"person"},
-                                        role="person", dedupe={"person"})
-            log.info("person detection via %s on %dx%d tiles", Path(cfg.person_weights).name, cfg.person_tiles, cfg.person_tiles)
+                                        role="person", dedupe={"person"}, tile_every=cfg.person_tile_every)
+            log.info("person detection via %s on %dx%d tiles%s", Path(cfg.person_weights).name, cfg.person_tiles, cfg.person_tiles,
+                     f", every {cfg.person_tile_every} frames per camera" if cfg.person_tile_every > 1 else "")
         except Exception:
             log.exception("could not load person model %s - using the PPE model's person class only", cfg.person_weights)
     if not cfg.phone_weights:

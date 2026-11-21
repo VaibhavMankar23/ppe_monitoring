@@ -28,6 +28,7 @@ class PassTimer:
         self._calls: dict[str, deque[tuple[float, float, int]]] = {}  # name -> (when, seconds, images)
         self._roles: dict[str, str] = {}
         self._events: dict[str, deque[tuple[float, int]]] = {}  # name -> (when, count)
+        self._samples: dict[str, deque[tuple[float, float]]] = {}  # name -> (when, value), for timings of single events
 
     def record(self, name: str, seconds: float, images: int, role: str = "", now: float | None = None) -> None:
         t = time.monotonic() if now is None else now
@@ -41,20 +42,28 @@ class PassTimer:
         with self._lock:
             self._events.setdefault(name, deque()).append((t, n))
 
+    def sample(self, name: str, value: float, now: float | None = None) -> None:
+        """One measured value of a single event, for example seconds spent confirming one violation."""
+        t = time.monotonic() if now is None else now
+        with self._lock:
+            self._samples.setdefault(name, deque()).append((t, value))
+
     def reset(self) -> None:
         with self._lock:
             self._calls.clear()
             self._events.clear()
+            self._samples.clear()
 
     def snapshot(self, now: float | None = None) -> dict[str, Any]:
         t = time.monotonic() if now is None else now
         cutoff = t - self._window
         with self._lock:
-            for q in (*self._calls.values(), *self._events.values()):
+            for q in (*self._calls.values(), *self._events.values(), *self._samples.values()):
                 while q and q[0][0] < cutoff:
                     q.popleft()
             calls = {k: list(v) for k, v in self._calls.items() if v}
             events = {k: list(v) for k, v in self._events.items() if v}
+            samples = {k: [x for _, x in v] for k, v in self._samples.items() if v}
             roles = dict(self._roles)
         total_busy = sum(s for rows in calls.values() for _, s, _ in rows) or 1e-9
         passes = []
@@ -76,7 +85,8 @@ class PassTimer:
             total = sum(n for _, n in rows)
             counters.append({"name": name, "per_s": round(total / span, 2), "total": total})
         counters.sort(key=lambda c: c["name"])
-        return {"window_s": self._window, "passes": passes, "counters": counters}
+        timings = [{"name": k, "n": len(v), "avg": round(sum(v) / len(v), 3), "max": round(max(v), 3)} for k, v in sorted(samples.items())]
+        return {"window_s": self._window, "passes": passes, "counters": counters, "timings": timings}
 
 
 passes = PassTimer()

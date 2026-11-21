@@ -11,12 +11,12 @@ import cv2
 import numpy as np
 
 from app.config import load_config
-from app.detector import YoloDetector
+from app.detector import CompositeDetector, YoloDetector
 from app.passtimer import PassTimer, passes
 from app.pipeline import VERIFY_RETRY_SECONDS, InferenceEngine, StreamWorker
 from app.ppe_logic import Detection, PersonCompliance
 from app.sources import Frame
-from app.violations import Incident
+from app.violations import Fire, Incident
 from app.violations_db import ViolationStore
 from helpers import raw_config, write_config
 
@@ -42,10 +42,10 @@ class SpyDetector:
         return [[Detection("person", 0.9, (10.0, 10.0, 60.0, 120.0))] for _ in frames]
 
 
-def make_engine(tmp_path, device: str):
-    inference = {"person_refine": True, "refine_imgsz": 320, "refine_batch": 8}
+def make_engine(tmp_path, device: str, detector=None, **inference_extra):
+    inference = {"person_refine": True, "refine_imgsz": 320, "refine_batch": 8, **inference_extra}
     cfg = load_config(write_config(tmp_path, {**raw_config(tmp_path, 1), "inference": inference}))
-    spy = SpyDetector(device)
+    spy = detector or SpyDetector(device)
     worker = StreamWorker(cfg.streams[0], cfg, ViolationStore(":memory:"), detector=lambda: spy)
     return InferenceEngine("t", spy, [], 0.15, cfg.inference), spy, worker
 
@@ -172,3 +172,173 @@ def test_every_model_call_is_recorded_under_its_model_and_size():
     assert by_name["best_480_b32_fp16@480"]["role"] == "full frames"
     assert by_name["best_480_b32_fp16@320"]["role"] == "crops or evidence"
     assert by_name["best_480_b32_fp16@480"]["images_per_s"] > 0
+
+
+# ------------------------------------------------------------------ model.person_tile_every: skip the tile pass on some frames
+class Fixed:
+    """A detector that returns one fixed detection per image and counts the images it was given."""
+
+    imgsz, classes, device = 480, ["person", "helmet"], "cpu"
+
+    def __init__(self, cls: str, box=(10.0, 10.0, 60.0, 120.0)) -> None:
+        self.cls, self.box, self.calls = cls, box, []
+
+    def predict(self, frames, conf, imgsz=None):
+        self.calls.append(len(frames))
+        return [[Detection(self.cls, 0.9, self.box)] for _ in frames]
+
+
+def person_composite(every: int):
+    primary, tiles = Fixed("helmet"), Fixed("person")
+    return CompositeDetector(primary, tiles, keep={"person"}, role="person", dedupe={"person"}, tile_every=every), primary, tiles
+
+
+IMG = np.zeros((48, 64, 3), np.uint8)
+
+
+def test_every_frame_by_default_is_the_same_as_predict():
+    comp, _, tiles = person_composite(1)
+    plain = comp.predict([IMG], 0.3)
+    keyed = comp.predict_keyed([IMG], 0.3, ["a"])
+    assert [d.cls for d in keyed[0]] == [d.cls for d in plain[0]] == ["helmet", "person"]
+    assert tiles.calls == [1, 1]
+
+
+def test_tile_model_runs_on_every_nth_frame_of_a_camera_and_results_are_reused():
+    comp, primary, tiles = person_composite(3)
+    for _ in range(6):
+        out = comp.predict_keyed([IMG], 0.3, ["a"])
+        assert sorted(d.cls for d in out[0]) == ["helmet", "person"]  # the person is there on every frame
+    assert primary.calls == [1] * 6  # the PPE model sees every frame
+    assert tiles.calls == [1, 1]  # the tile model ran on frames 1 and 4 only
+
+
+def test_each_camera_has_its_own_tile_schedule():
+    comp, _, tiles = person_composite(2)
+    for _ in range(4):
+        comp.predict_keyed([IMG, IMG], 0.3, ["a", "b"])
+    assert tiles.calls == [2, 2]  # both cameras on frames 1 and 3, none on 2 and 4
+    comp.predict_keyed([IMG], 0.3, ["c"])  # a new camera runs at once
+    assert tiles.calls == [2, 2, 1]
+
+
+def test_a_frame_without_a_camera_key_is_never_cached():
+    comp, _, tiles = person_composite(3)
+    for _ in range(3):
+        comp.predict_keyed([IMG], 0.3, [None])
+    assert tiles.calls == [1, 1, 1]
+
+
+def test_a_reused_tile_result_expires(monkeypatch):
+    import app.detector as D
+
+    comp, _, tiles = person_composite(10)
+    t = [100.0]
+    monkeypatch.setattr(D.time, "monotonic", lambda: t[0])
+    comp.predict_keyed([IMG], 0.3, ["a"])
+    t[0] += 1.0
+    comp.predict_keyed([IMG], 0.3, ["a"])
+    assert tiles.calls == [1]  # reused
+    t[0] += CompositeDetector.CACHE_MAX_AGE + 0.1
+    comp.predict_keyed([IMG], 0.3, ["a"])
+    assert tiles.calls == [1, 1]  # too old, whatever tile_every says
+
+
+def test_phone_model_still_runs_every_frame_and_the_person_model_still_skips():
+    inner, primary, tiles = person_composite(3)
+    phone = Fixed("phone")
+    outer = CompositeDetector(inner, phone)  # role "phone"
+    for _ in range(3):
+        outer.predict_keyed([IMG], 0.3, ["a"])
+    assert phone.calls == [1, 1, 1] and tiles.calls == [1]
+
+
+# ------------------------------------------------------------------ inference.refine_every: reuse the crop result
+class BlobDetector:
+    """Returns one person box around the bright pixels of each image (the synthetic worker)."""
+
+    device, imgsz, classes = "cuda:0", 480, ["person"]
+
+    def __init__(self) -> None:
+        self.crop_calls = 0
+
+    def predict(self, frames, conf, imgsz=None):
+        if imgsz is not None:
+            self.crop_calls += 1
+        out = []
+        for img in frames:
+            ys, xs = np.where(img.min(axis=2) > 200)
+            out.append([Detection("person", 0.9, (float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)))]
+                       if len(xs) else [])
+        return out
+
+
+def person_box(out):
+    return next(d for d in out if d.cls == "person").box
+
+
+def test_refine_every_reuses_the_crop_result_and_moves_it_with_the_worker(tmp_path):
+    passes.reset()
+    blob = BlobDetector()
+    engine, _, worker = make_engine(tmp_path, "cuda:0", detector=blob, refine_every=2)
+    frame = frame_with_worker()
+    box = (601.5, 188.0, 646.0, 320.0)  # process-res box around the worker, a little off
+    moved = (box[0] + 3, box[1] + 2, box[2] + 3, box[3] + 2)
+    first = person_box(engine._refine([(worker, frame)], [[Detection("person", 0.9, box)]], 0.3)[0])
+    assert blob.crop_calls == 1
+    second = person_box(engine._refine([(worker, frame)], [[Detection("person", 0.9, moved)]], 0.3)[0])
+    assert blob.crop_calls == 1  # no new crop pass
+    assert all(abs(b - (a + d)) < 1e-6 for a, b, d in zip(first, second, (3, 2, 3, 2)))  # the last result, moved
+    engine._refine([(worker, frame)], [[Detection("person", 0.9, moved)]], 0.3)
+    assert blob.crop_calls == 2  # every 2nd frame is sharp again
+    assert next(c for c in passes.snapshot()["counters"] if c["name"] == "crops_reused")["total"] == 1
+
+
+def test_default_refine_every_is_a_crop_pass_on_every_frame(tmp_path):
+    blob = BlobDetector()
+    engine, _, worker = make_engine(tmp_path, "cuda:0", detector=blob)
+    for _ in range(3):
+        engine._refine([(worker, frame_with_worker())], [[Detection("person", 0.9, (601.5, 188.0, 646.0, 320.0))]], 0.3)
+    assert blob.crop_calls == 3 and worker._refine_cache == []
+
+
+def test_a_different_worker_is_not_given_anyone_elses_crop_result(tmp_path):
+    blob = BlobDetector()
+    engine, _, worker = make_engine(tmp_path, "cuda:0", detector=blob, refine_every=3)
+    frame = frame_with_worker()
+    engine._refine([(worker, frame)], [[Detection("person", 0.9, (601.5, 188.0, 646.0, 320.0))]], 0.3)
+    engine._refine([(worker, frame)], [[Detection("person", 0.9, (100.0, 190.0, 150.0, 330.0))]], 0.3)  # far away
+    assert blob.crop_calls == 2
+
+
+def test_cache_is_cleared_when_nobody_is_in_view(tmp_path):
+    blob = BlobDetector()
+    engine, _, worker = make_engine(tmp_path, "cuda:0", detector=blob, refine_every=3)
+    frame = frame_with_worker()
+    engine._refine([(worker, frame)], [[Detection("person", 0.9, (601.5, 188.0, 646.0, 320.0))]], 0.3)
+    assert len(worker._refine_cache) == 1
+    engine._refine([(worker, frame)], [[]], 0.3)
+    assert worker._refine_cache == []
+
+
+# ------------------------------------------------------------------ violation timings
+def test_timing_samples_are_summarised():
+    t = PassTimer(window=60.0)
+    for v in (1.0, 2.0, 3.0):
+        t.sample("confirmation_wait_s", v, now=100.0)
+    t.sample("old", 9.0, now=0.0)
+    snap = t.snapshot(now=110.0)
+    assert snap["timings"] == [{"name": "confirmation_wait_s", "n": 3, "avg": 2.0, "max": 3.0}]
+
+
+def test_a_stored_violation_records_how_long_it_waited_and_how_long_the_evidence_took(tmp_path):
+    passes.reset()
+    _, _, worker = make_engine(tmp_path, "cuda:0", detector=BlobDetector())
+    # the evidence pass needs a detector on the worker: use the same blob detector
+    worker._detector = lambda: BlobDetector()
+    inc = Incident(key=1, tracks={3}, missing={"helmet"}, box=(0.0, 0.0, 1.0, 1.0), start=10.0, last_seen=10.0)
+    p = PersonCompliance(3, (601.5, 188.0, 646.0, 320.0), 0.8, "non_compliant", {"helmet": "missing"})
+    worker._record_violation(frame_with_worker(), p, Fire(p, inc, None, 8.5))
+    by_name = {t["name"]: t for t in passes.snapshot()["timings"]}
+    assert by_name["confirmation_wait_s"]["avg"] == 1.5 and by_name["confirmation_wait_s"]["n"] == 1
+    assert by_name["evidence_build_s"]["n"] == 1 and by_name["evidence_build_s"]["avg"] >= 0
