@@ -6,6 +6,19 @@ All notable changes to the PPE Compliance Monitor. Dates are IST.
 
 Readiness work for the 30-45 camera plant roll-out: capacity, security, UI and acceptance testing.
 
+### Detector efficiency (Nov 2026)
+- **Changed:** the person-crop pass no longer fills its batch with blank images on NVIDIA GPUs and on the CPU. It
+  did so everywhere, which was only needed on the Intel GPU, where every new shape recompiles. One worker in view
+  meant 1 real crop and 7 blank ones; now only the real crops are sent. The Intel GPU keeps fixed shapes. Warm-up
+  now runs every crop batch size where shapes are dynamic.
+- **Changed:** when an ongoing violation gains a new missing item that the sharp check cannot confirm, the check is
+  repeated at most every 3 seconds (`VERIFY_RETRY_SECONDS`). Before, it ran a 640 px model call on every frame
+  for as long as the situation lasted. The item stays held back, as before, until a check confirms it.
+- **Added:** "Where detector time goes" on System health: every model call of the last minute, by model and input
+  size (full frames, person tiles, crops, evidence), with calls and images per second, time per call and per image,
+  and each pass's share of the detector's time. It also counts person crops, blank crops and held-back
+  re-checks, so the cost of every pass is measured and not estimated (`passtimer.py`).
+
 ### Camera order (Nov 2026)
 - **Changed:** cameras are listed in natural order by name everywhere (Live wall and board, fleet board, Cameras
   and zones, System health, filters, search): numbers ascending (51, 54, 86, 100), then names with letters, and

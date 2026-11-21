@@ -403,6 +403,19 @@ export interface ServerFiles {
   max_upload_mb: number;
 }
 
+/** One kind of model call over the last minute: which model and input size, how often, how long, how much of the total. */
+export interface PassStat {
+  name: string;
+  role: string;
+  calls_per_s: number;
+  images_per_s: number;
+  avg_ms_call: number;
+  avg_ms_image: number;
+  share: number;
+}
+export interface PassCounter { name: string; per_s: number; total: number }
+export interface PassSummary { window_s: number; passes: PassStat[]; counters: PassCounter[] }
+
 export interface EngineStats {
   name: string;
   device: string;
@@ -459,6 +472,7 @@ export interface SystemHealth {
   engines: EngineStats[];
   host: { cpu_percent?: number; process_cpu_percent?: number; memory_percent?: number; process_rss_mb?: number; process_count?: number; threads?: number; cpu_count?: number };
   gpus?: GpuInfo[];
+  passes?: PassSummary;
   server?: ServerInfo;
   cameras: CameraHealth[];
   focus: FocusState;

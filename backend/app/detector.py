@@ -18,6 +18,7 @@ from typing import Protocol
 import numpy as np
 
 from .config import ModelConfig
+from .passtimer import passes
 from .ppe_logic import Detection
 
 log = logging.getLogger(__name__)
@@ -284,6 +285,7 @@ class YoloDetector:
         # FP16 only matters on CUDA; newer Ultralytics warns on every call when `half` is passed.
         extra = {"half": True} if self.half else {}
         with self._lock:
+            t0 = time.perf_counter()
             self._use_cuda_device()
             results = model.predict(
                 frames,
@@ -305,6 +307,10 @@ class YoloDetector:
                 for b, c, k in zip(xyxy, confs, clss):
                     dets.append(Detection(self.class_table[int(k)], float(c), tuple(float(v) for v in b)))  # type: ignore[arg-type]
             out.append(dets)
+        # one record per model call: the pass is named after the weights and the input size, so the full-frame
+        # pass, the crop / evidence pass and the tiled person model each show their own cost
+        passes.record(f"{Path(self._weights).stem}@{imgsz or self.imgsz}", time.perf_counter() - t0, len(frames),
+                      role="full frames" if imgsz is None else "crops or evidence")
         return out
 
 

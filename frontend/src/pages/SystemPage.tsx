@@ -5,7 +5,7 @@ import { Button, cx, Empty, Notice, Panel, PanelHeader, Segmented, Skeleton, Sta
 import { api } from "../lib/api";
 import { fmtAgo, fmtDuration, fmtInt } from "../lib/format";
 import { navigate } from "../lib/router";
-import type { CameraHealth, StreamStatus, SystemHealth } from "../types";
+import type { CameraHealth, PassSummary, StreamStatus, SystemHealth } from "../types";
 
 const POLL_MS = 2000;
 const HISTORY = 60; // samples kept for the sparklines (about two minutes)
@@ -369,6 +369,8 @@ export function SystemPage() {
           )}
         </Panel>
 
+        <PassesPanel data={health.passes} />
+
         <Panel>
           <PanelHeader title="Cameras"
             hint={health.cameras.length === 0 ? undefined
@@ -477,6 +479,62 @@ function ServerPanel({ health }: { health: SystemHealth }) {
             </tbody>
           </table>
         </div>
+      )}
+    </Panel>
+  );
+}
+
+
+const COUNTER_LABEL: Record<string, string> = {
+  crops: "person crops checked",
+  blank_padding_crops: "blank crops added to fill a batch",
+  evidence_recheck_held_back: "evidence re-checks held back",
+};
+
+/** Every kind of model call: full frames, person tiles, person crops, evidence. Shows where the detector's time goes. */
+function PassesPanel({ data }: { data?: PassSummary }) {
+  if (!data || data.passes.length === 0) return null;
+  return (
+    <Panel>
+      <PanelHeader title="Where detector time goes"
+        hint={`Every model call in the last ${Math.round(data.window_s)} s, by model and input size. An image is a frame, a tile or a crop.`} />
+      <div className="scroll-thin overflow-x-auto">
+        <table className="table min-w-[680px]">
+          <thead>
+            <tr>
+              <th>Pass</th><th>Runs on</th>
+              <th className="text-right">Calls/s</th><th className="text-right">Images/s</th>
+              <th className="text-right">Per call</th><th className="text-right">Per image</th><th>Share of detector time</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.passes.map((p) => (
+              <tr key={p.name}>
+                <td className="num font-medium text-ink">{p.name}</td>
+                <td>{p.role || dash}</td>
+                <td className="num text-right">{p.calls_per_s.toFixed(1)}</td>
+                <td className="num text-right">{p.images_per_s.toFixed(1)}</td>
+                <td className="num text-right whitespace-nowrap">{p.avg_ms_call.toFixed(1)} ms</td>
+                <td className="num text-right whitespace-nowrap">{p.avg_ms_image.toFixed(2)} ms</td>
+                <td>
+                  <span className="flex items-center gap-2">
+                    <span className="h-1.5 w-24 overflow-hidden rounded-full bg-sunken" role="img" aria-label={`${Math.round(p.share * 100)}% of detector time`}>
+                      <span className="block h-full bg-accent" style={{ width: `${Math.round(p.share * 100)}%` }} />
+                    </span>
+                    <span className="num text-xs text-ink-2">{Math.round(p.share * 100)}%</span>
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {data.counters.length > 0 && (
+        <p className="border-t border-line px-4 py-2.5 text-xs text-ink-3">
+          {data.counters.map((c, i) => (
+            <span key={c.name}>{i > 0 && " · "}{COUNTER_LABEL[c.name] ?? c.name}: <span className="num text-ink-2">{c.per_s.toFixed(1)}/s</span></span>
+          ))}
+        </p>
       )}
     </Panel>
   );

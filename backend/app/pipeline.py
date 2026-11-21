@@ -36,6 +36,7 @@ from .annotate import draw, evidence_image, person_crop, violation_snapshot
 from .config import AppConfig, InferenceConfig, ModelConfig, StreamConfig
 from .detector import Detector, build_detector
 from .hostinfo import sampler, server_info
+from .passtimer import passes
 from .ppe_logic import (
     BEHAVIOR_CLASS, Box, ComplianceSmoother, Detection, PersonCompliance, PPE_ITEMS, Zone, ZONE_ITEMS, apply_zones, drop_group_boxes, mask_unmonitored, crop_region, detectable_items, disproved_items, evaluate_frame, match_person, unchecked,
     merge_refined, refine_person_box,
@@ -82,6 +83,7 @@ THUMB_HEIGHT = 240
 VIEW_WIDTHS = (320, 480, 640)  # sizes a viewer can ask for (rounded up); larger = full processing width
 RATE_WINDOW_S = 3.0  # seconds of frames that confirm a violation / smooth a verdict at low frame rates
 OBS_FLUSH_SECONDS = 60.0  # how often worker counters (compliance-rate denominator) are written
+VERIFY_RETRY_SECONDS = 3.0  # an ongoing event re-checks a new missing item at most this often (each check is a model call)
 EVENT_WRITE_SECONDS = 2.0  # how often an ongoing violation event is written back (duration / observations)
 
 
@@ -129,6 +131,7 @@ class StreamWorker:
                                         min_seconds=a.min_violation_seconds, gap=a.event_gap_seconds)
         # stored-event bookkeeping: incident key -> (last DB write, missing set written)
         self._inc_written: dict[int, tuple[float, frozenset[str]]] = {}
+        self._verify_at: dict[int, float] = {}  # incident key -> when its new missing items were last re-checked
         # identifies the exact settings a violation was produced with (secrets never leave the hash)
         self._cfg_sha = hashlib.sha256(json.dumps(app_cfg.model_dump(mode="json"), sort_keys=True, default=str)
                                        .encode()).hexdigest()[:16]
@@ -567,6 +570,7 @@ class StreamWorker:
             self._write_incident(inc, missing != written)
         for inc in step.ended:
             self._inc_written.pop(inc.key, None)
+            self._verify_at.pop(inc.key, None)
 
     def _verify_new_items(self, inc: Incident, written: frozenset[str], frame: Frame, people: list[PersonCompliance]) -> None:
         """An ongoing event gained a missing item (a hand over the helmet, a turn away from the camera):
@@ -575,6 +579,12 @@ class StreamWorker:
         new = inc.missing - written - inc.cleared
         if not new:
             return
+        now = time.monotonic()
+        if now - self._verify_at.get(inc.key, -1e9) < VERIFY_RETRY_SECONDS:
+            inc.missing -= new  # checked a moment ago and not confirmed: held back, without another model call
+            passes.count("evidence_recheck_held_back")
+            return
+        self._verify_at[inc.key] = now
         p = next((q for q in people if q.track_id in inc.tracks and q.status == "non_compliant"), None)
         box, confirmed, others, sharp_ppe = self.evidence(frame, p) if p is not None else (None, None, [], [])
         if not confirmed:
@@ -607,6 +617,7 @@ class StreamWorker:
                 last = self._inc_written.get(inc.key, (0.0, frozenset()))[1]
                 self._write_incident(inc, frozenset(inc.missing) != last, ended=True)
         self._inc_written.clear()
+        self._verify_at.clear()
 
     def _count_obs(self, seen: int = 0, violating: int = 0) -> None:
         c = self._obs.setdefault(int(time.time() // OBS_BUCKET) * OBS_BUCKET, [0, 0])
@@ -785,12 +796,14 @@ class InferenceEngine:
             self.detector.predict([img] * n, 0.5)
         if self.icfg.person_refine:
             s = self.icfg.refine_imgsz
-            self.detector.predict([np.zeros((s, s, 3), dtype=np.uint8)] * self.refine_batch, 0.5, imgsz=s)
+            for k in ([self.refine_batch] if self.pad_batches else range(1, self.refine_batch + 1)):
+                self.detector.predict([np.zeros((s, s, 3), dtype=np.uint8)] * k, 0.5, imgsz=s)
         if self.evidence_imgsz:  # compiled now rather than on the first alert
             s = self.evidence_imgsz
             self.detector.predict([np.zeros((s, s, 3), dtype=np.uint8)], 0.5, imgsz=s)
         log.info("[%s] engine warm-up (batch sizes %s%s) %.0f ms", self.name, list(sizes),
                  " + crop pass" if self.icfg.person_refine else "", (time.perf_counter() - t0) * 1000)
+        passes.reset()  # the warm-up calls are not real work
 
     def start(self) -> None:
         self._thread.start()
@@ -868,9 +881,16 @@ class InferenceEngine:
         # plugin recompile for every new shape, which would stall the pipeline for ~1 s each time.
         t0 = time.perf_counter()
         n = self.refine_batch
-        pad = (-len(crops)) % n
+        # Fill the last call with blank crops only where the accelerator recompiles for every new shape (the
+        # Intel GPU plugin, as for the full-frame batches in _pad). TensorRT engines take a dynamic batch and the
+        # CPU plugin does not recompile, so there the blanks were pure extra work: one worker in view meant
+        # 1 real crop and 7 blank ones.
+        pad = (-len(crops)) % n if self.pad_batches else 0
         blank = np.full_like(crops[0], 114)
         batch = crops + [blank] * pad
+        passes.count("crops", len(crops))
+        if pad:
+            passes.count("blank_padding_crops", pad)
         crop_dets: list[list[Detection]] = []
         for j in range(0, len(batch), n):
             crop_dets += self.detector.predict(batch[j : j + n], conf, imgsz=ic.refine_imgsz)
@@ -1170,7 +1190,7 @@ class Monitor:
         return {
             "uptime_s": round(time.time() - self._started_at),
             "device": self.device, "mode": self.cfg.inference.mode, "post_workers": self.post_workers,
-            "engines": engines, "host": host, "gpus": sampler.gpus(), "server": server_info(),
+            "engines": engines, "passes": passes.snapshot(), "host": host, "gpus": sampler.gpus(), "server": server_info(),
             "cameras": cams, "focus": self.focus_state(),
             "capacity": {
                 "engine_utilization": util,
